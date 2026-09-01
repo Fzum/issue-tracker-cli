@@ -25,6 +25,13 @@ progress reporting must fall out of the same files without additional schema.
 One flat directory. Every work package is one file.
 
 ```
+issue-tracker-cli/
+  README.md
+  package.json
+  tsconfig.json
+  wp.ts
+  tests/
+    wp.test.ts
 wps/
   wp-m1.md
   wp-m1e1.md
@@ -32,7 +39,6 @@ wps/
   wp-m1e1u2.md
   wp-m1e2.md
   wp-m2.md
-wp.py
 ```
 
 No nested folders. A milestone is simply a WP that has children, so `ls` prints
@@ -143,9 +149,10 @@ in that order; ties cannot occur because stems are unique.
 
 ## 6. CLI
 
-`wp.py` — single file, Python 3.11+, standard library only. Run as
-`python wp.py <cmd>` or `./wp.py <cmd>` via shebang. Read-only: it never
-modifies a file. Agents flip `status` with an ordinary file edit.
+`issue-tracker-cli/wp.ts` — single-file TypeScript CLI for Bun 1.0+, with no
+runtime dependencies. From `issue-tracker-cli/`, run as `bun run wp <cmd>`,
+`bun wp.ts <cmd>`, or `./wp.ts <cmd>` via shebang. Read-only: it never modifies
+a file. Agents flip `status` with an ordinary file edit.
 
 Commands operate on `./wps` by default; `--dir <path>` overrides.
 Every command accepts `--json` for machine consumption.
@@ -292,3 +299,6 @@ Unit tests per group in §8, over a fixture folder:
   (`m2` before `m10`), empty ready queue
 - check: one test per rule in §7, plus a clean folder exiting 0
 - cli: exit codes, `--json` shape stability
+
+The suite uses Bun's built-in test runner and Given/When/Then test structure.
+Run it from `issue-tracker-cli/` with `bun test`.

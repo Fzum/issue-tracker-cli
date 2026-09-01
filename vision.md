@@ -196,11 +196,14 @@ depth-first in natural order (m1e1u1, m1e1u2, m1e2, m2e1...).
 
 Progress rollup falls out for free — no extra schema.
 
-### D8 — Single-file Python, stdlib only (2026-09-01)
+### D8 — Single-file TypeScript on Bun (2026-09-01)
 
-`wp.py`, ~200 lines, no dependencies. Frontmatter is parsed as a deliberate
-YAML *subset* (see spec) rather than via pyyaml — zero install in any agent
-sandbox, and an agent can read and patch the whole tool in one context window.
+`issue-tracker-cli/wp.ts`, no runtime dependencies. The CLI is an independent
+Bun project that can be opened directly in an IDE. Frontmatter is parsed as a
+deliberate YAML *subset* (see spec) rather than through a package — a minimal
+install in any agent sandbox, while keeping the whole tool readable and
+patchable in one module. Development uses Bun's test runner and TypeScript for
+static checks.
 
 ---
 
