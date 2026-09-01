@@ -35,5 +35,5 @@ bun run wp --dir /path/to/project/wps check
 Available commands are `next [--all]`, `show <id>`, `tree`, and `check`.
 Every command supports `--json`; `--dir <path>` overrides the default `./wps`.
 
-The full design is in
-[`../docs/superpowers/specs/2026-09-01-agentic-issue-tracker-design.md`](../docs/superpowers/specs/2026-09-01-agentic-issue-tracker-design.md).
+The full design is in [`docs/design.md`](docs/design.md); the brainstorming and
+decision log behind it is in [`docs/vision.md`](docs/vision.md).

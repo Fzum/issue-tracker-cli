@@ -1,30 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.eggs/
-build/
-dist/
-.installed.cfg
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# Test / coverage / type-check caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.tox/
-.nox/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
+# Node / Bun
+node_modules/
+*.tsbuildinfo
 
 # Editors / IDEs
 .idea/
