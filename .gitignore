@@ -1,0 +1,10 @@
+node_modules/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
