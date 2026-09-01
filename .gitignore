@@ -1,4 +1,6 @@
+# Node / Bun
 node_modules/
+*.tsbuildinfo
 
 # Editors / IDEs
 .idea/
