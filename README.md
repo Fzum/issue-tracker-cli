@@ -375,6 +375,6 @@ and write real files to temp dirs.
   derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit
   codes.
 - [`docs/vision.md`](docs/vision.md) — brainstorming plus the decision log
-  D1–D10. Read it before questioning a constraint; most surprising choices are
+  D1–D11. Read it before questioning a constraint; most surprising choices are
   deliberate.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for agents working on this repo.

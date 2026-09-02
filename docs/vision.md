@@ -198,7 +198,7 @@ Progress rollup falls out for free — no extra schema.
 
 ### D8 — Single-file TypeScript on Bun (2026-09-01)
 
-> Superseded in part by D10: the "one module" clause no longer holds. Everything
+> Superseded in part by D11: the "one module" clause no longer holds. Everything
 > else in D8 — zero runtime dependencies, no build step, the YAML subset — stands.
 
 `issue-tracker-cli/wp.ts`, no runtime dependencies. The CLI is an independent
@@ -240,7 +240,48 @@ until parallel agents make bare `doing` collide.
 Still deferred: `wp new`, `wp mv`, a `cancelled` status, relation types beyond
 `blocked_by`.
 
-### D10 — Split `wp.ts` into `src/` modules (2026-09-02)
+### D10 — The tracker is tooling; the work lives elsewhere (2026-09-02)
+
+The goal all of the above serves, written down once so it stops being implicit.
+
+**The end state.** Drop a vision into any repository. A BA agent turns it into
+`wps/`, a relation pass fills in `blocked_by`, `wp check` passes, and an
+orchestrator drains the queue in waves until every leaf is `done`. What comes out
+is merged, tested code on `main` — not a report about what should have been built.
+
+**Two places, never one.** `wp` is a tool, like `git` or `jq`: installed once,
+pointed at a folder. It holds no work of its own. The `wps/` in this repository is
+a fixture, nothing more. Real tickets live in the project they describe, next to
+its code:
+
+```
+~/tools/issue-tracker-cli/   wp.ts, orchestrate.ts           the tooling
+~/code/shop-api/             src/, wps/, prompts/worker.md    the work
+```
+
+Nothing in `wp.ts` knows about TypeScript or Bun — it knows filenames, three
+frontmatter fields and three status values — so it drops into a Python or Rust
+project unchanged. Each project brings exactly three things: its own `wps/`, a
+`prompts/worker.md`, and a command that verifies the build.
+
+**The missing actor.** §2 named the BA agent, the relation pass and implementer
+agents. The one it lacked is the **orchestrator**: it owns `main` and `wps/`,
+hands each ready leaf to a worker isolated in its own git worktree, and integrates
+the branches serially. Workers never merge and never touch the tracker files.
+`done` means merged and green, not "the agent reported success".
+
+**No scheduler was needed.** Readiness is recomputed on every invocation, so
+`wp next --all` already *is* the wave, and a dependency enforces itself by not
+appearing in the queue. Likewise no prompt library is needed: `wp show <id>` is
+the task half of a worker prompt, so the tickets the BA agent wrote were always
+the prompts.
+
+Still open: `orchestrate.ts` is not built, and the verify command it runs is
+hardcoded rather than configured per project.
+
+Full runbook: `docs/execution-model.md`.
+
+### D11 — Split `wp.ts` into `src/` modules (2026-09-02)
 
 D8 chose one module to keep the tool readable and patchable. At ~1080 lines that
 stopped being true: finding the tree renderer meant scrolling past the YAML
@@ -296,4 +337,5 @@ is why the pre-existing suite never saw either bug.
 
 ## Outcome
 
-All seven questions resolved. Full design: `docs/superpowers/specs/2026-09-01-agentic-issue-tracker-design.md`
+All seven questions resolved. Full design: `docs/design.md`. How the queue is
+actually run: `docs/execution-model.md`.
