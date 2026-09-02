@@ -147,7 +147,107 @@ One sharp edge: a WP stuck at `doing` **will not come back in the queue**, becau
 editing the `status:` line by hand (or `wp start` on it again, which is a no-op).
 Keep the worktree until the WP is genuinely done.
 
-## 8. Deliberately not built
+## 8. Implementing the orchestrator
+
+`orchestrate.ts` is not built yet. This section records the intended shape.
+
+### 8.1 The prompt is the WP
+
+You never write a prompt per WP. The WP *is* the prompt.
+
+`wp show <id>` prints the description plus the markdown body — what the BA agent
+wrote the ticket for. A worker's prompt is two halves glued at spawn time:
+
+- **Role** — fixed, one hand-written `prompts/worker.md`, identical for every
+  worker: how to work here, run the suite, commit at the end, never touch `wps/`,
+  report back.
+- **Task** — `wp show <id>` output. Already written, already in git.
+
+```
+prompts/worker.md   (role, hand-written once)
+        +
+wp show wp-m1e2u3   (task, written by the BA agent)
+        =
+the prompt for one agent
+```
+
+The tracker does not feed IDs to a program that then invents instructions. The
+tickets were always the prompts; the loop delivers them.
+
+### 8.2 Language
+
+TypeScript on Bun, in `orchestrate.ts` next to `wp.ts`.
+
+1. Same runtime as the CLI (D8). No new toolchain, and Bun's shell is built in, so
+   still zero dependencies.
+2. A wave is `await Promise.all(ids.map(work))`. Bash parallel jobs plus exit-code
+   collection is fiddly.
+3. Prompt quoting is the real killer in shell: multi-paragraph prompts containing
+   backticks, quotes and `$` inside `claude -p "..."`.
+
+Rejected:
+
+- **Plain shell.** Fine for a 20-line spike to feel the loop. Dies on quoting and
+  error handling.
+- **No program at all** — a Claude Code skill where the main session orchestrates
+  and spawns subagents through the Agent tool's worktree isolation. Zero code, but
+  it is a model following prose: it can merge out of order or forget a `wp done`.
+  Good for learning, bad for a loop whose whole value is deterministic bookkeeping.
+
+### 8.3 Sketch
+
+```ts
+#!/usr/bin/env bun
+import { $ } from "bun";
+
+const ROLE = await Bun.file("prompts/worker.md").text();
+
+const ready = async (): Promise<string[]> =>
+  JSON.parse(await $`./wp.ts next --all --json`.text()).map((w: any) => w.id);
+
+async function work(id: string) {
+  const dir = `../wt-${id}`;
+  await $`./wp.ts start ${id}`;
+  await $`git worktree add ${dir} -b wp/${id}`;
+  await $`bun install`.cwd(dir);
+
+  const brief = await $`./wp.ts show ${id}`.text();     // description + body
+  const prompt = `${ROLE}\n\n---\n\n${brief}`;          // role + task
+
+  await $`claude -p ${prompt} --permission-mode acceptEdits`.cwd(dir);
+}
+
+for (;;) {
+  const ids = await ready();
+  if (ids.length === 0) break;
+
+  await Promise.all(ids.map(work));          // the wave — parallel
+
+  for (const id of ids) {                    // integration — serial, §6 rule 3
+    await $`git merge --no-ff wp/${id}`;
+    await $`bun test`;                       // throws -> no `done`, branch kept
+    await $`./wp.ts done ${id}`;
+    await $`git worktree remove ../wt-${id}`;
+  }
+}
+```
+
+Three notes:
+
+- Bun's `$` throws on a non-zero exit, so a red suite aborts before `wp done` — the
+  §7 behaviour for free. In real code, wrap the integration body in try/catch to
+  continue with the next branch.
+- `claude -p` is headless. `--permission-mode acceptEdits` stops it asking;
+  `--output-format json` if you want to parse what it did.
+- Each worktree also contains `wps/`, so "never touch the tracker files" is
+  enforced by the role prompt rather than by the filesystem. An agent that ignores
+  it shows up as a merge conflict — noisy, but not silent.
+
+The four rules of §6 are visible in the control flow: `start` before spawn,
+`Promise.all` for the wave, a `for` loop for integration, `done` only after the
+suite passes.
+
+## 9. Deliberately not built
 
 | Not built | Add when |
 |---|---|
