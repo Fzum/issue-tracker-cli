@@ -20,7 +20,7 @@ export {
   Wp,
   WpError,
 } from "./src/model.ts";
-export { compareWpIds, parentId, stemSegments } from "./src/ids.ts";
+export { compareWpIds, isWithin, parentId, stemSegments } from "./src/ids.ts";
 export { parseFrontmatter } from "./src/frontmatter.ts";
 export { graphFromScan, WpGraph } from "./src/graph.ts";
 export { loadGraph, parseWp, scanDirectory, setStatus } from "./src/store.ts";

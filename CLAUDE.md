@@ -63,7 +63,7 @@ The CLI is a pipeline. One concern per file, each testable alone; the data path 
 
 | Module | Concern |
 |---|---|
-| `src/ids.ts` | Invariant 1: the stem grammar, `compareWpIds`, `compareBlockerIds`, `compareText`. Imports nothing. |
+| `src/ids.ts` | Invariant 1: the stem grammar, `isWithin`, `compareWpIds`, `compareBlockerIds`, `compareText`. Imports nothing. |
 | `src/model.ts` | The `WpError` taxonomy plus `Wp` / `ScannedFile` / `Problem`. Imports nothing. |
 | `src/frontmatter.ts` | Invariant 7: the deliberate YAML subset, and EOL-preserving line splitting |
 | `src/graph.ts` | Invariants 3, 4, 5: every derivation. Pure. |
@@ -72,7 +72,7 @@ The CLI is a pipeline. One concern per file, each testable alone; the data path 
 | `src/check.ts` | The `wp check` rules. Pure — takes a scan, not a directory. |
 | `src/transitions.ts` | The `start` / `done` guard policy and what `--force` overrides |
 | `src/render.ts` | Plain-text and JSON output for every command except `tree`. Returns strings. |
-| `src/tree.ts` | The glyph tree: connectors, rollup counts, blocker lists, column alignment, `tree --json` |
+| `src/tree.ts` | The glyph tree: connectors, rollup counts, blocker lists, column alignment, `--scope` re-rooting, `tree --json` |
 | `src/cli.ts` | **The only module that touches `process.*`.** argv grammar, help, dispatch, exit codes. |
 
 Dependency direction is strictly one-way; an import may only point at a lower level:
@@ -185,6 +185,21 @@ worktree has a `package.json`. Agent output goes to `log/<id>.log`, which is git
 and — like `wps/` — exempt from the clean-worktree preflight, or a second run would
 refuse to start.
 
+`--scope ID` restricts a run to one work package and everything under it — a
+milestone, an epic or a single story, decided by the stem depth rather than by a
+keyword. It is passed straight through to `wp next --scope`, so nothing here
+computes hierarchy; that is deliberate, because a string prefix match would be
+wrong (`wp-m1` vs `wp-m10`) and re-deriving the stem grammar across the subprocess
+boundary is exactly what this file must not do.
+
+A scoped run that never got a wave off the ground looks identical to a finished
+one, so `printScopeStall` explains it before the summary: `wp tree --scope ID
+--json` per WP, with any blocker whose id is *not* among the returned rows marked
+`(outside scope)` — no run can release those, so widening the scope is the only way
+out. It sits next to `printPlan` in section 5 and makes its own `wp` calls rather
+than becoming a `Driver` method: it is reporting, not a step of the loop, and
+`runQueue` stays untouched by it.
+
 `orchestrate.ts` ends with `process.exitCode = await main()` and the same EPIPE guard
 as `wp.ts`, for the same two reasons.
 
@@ -261,7 +276,7 @@ Which module owns each invariant — change **every** listed owner together:
 |---|---|
 | 1 | `src/ids.ts` (grammar + ordering) and `src/store.ts` (path → ID, and the only `STEM_PATTERN` test; `parseWp` deliberately does not validate the stem) |
 | 2 | `src/model.ts` (`Wp`'s getters), `src/frontmatter.ts` (unknown keys preserved), `src/store.ts` (`blocked_by ??= []`) |
-| 3 | `src/graph.ts` and `src/ids.ts` (`parentId` *is* the parent derivation); `src/render.ts` / `src/tree.ts` re-derive type and depth for the wire |
+| 3 | `src/graph.ts` (`subtree`) and `src/ids.ts` (`parentId` *is* the parent derivation, `isWithin` the subtree one); `src/render.ts` / `src/tree.ts` re-derive type and depth for the wire |
 | 4 | `src/graph.ts`, enforced by `src/check.ts` and `src/transitions.ts` |
 | 5 | **Two implementations with inverted polarity, both in `src/graph.ts`:** `isReady` (yes/no) and `unmetDependencies` (names the blockers). Change both. Two readers depend on that equivalence: `src/transitions.ts` lists the blockers in the `wp start` refusal, `src/tree.ts` prints them after `⊘`. |
 | 6 | `src/store.ts` (`setStatus`, the writer) and `src/transitions.ts` (the guards) |
@@ -271,6 +286,16 @@ Ordering everywhere is `compareWpIds` — natural sort by segment letter then nu
 value, so `wp-m2` precedes `wp-m10`. Never fall back to lexicographic sort on IDs.
 `compareText` in `src/ids.ts` is the lexicographic one; it is for filenames, object keys
 and problem messages only.
+
+`--scope ID` on `wp next` and `wp tree` narrows both to one subtree. It compares
+*segments*, never strings — `"wp-m10e1".startsWith("wp-m1")` is `true`, so a string
+prefix would quietly sweep a whole other milestone into a scoped run. That is what
+`isWithin` in `src/ids.ts` is for, and it is why the filter lives in the CLI rather
+than in `orchestrate.ts`, which must not know the stem grammar. A scope *filters*
+readiness and never relaxes it: `WpGraph.readyQueue(scope)` applies `isReady` first
+and the subtree second, so invariant 5 is untouched. An unknown scope is an unknown
+ID (exit 2) — `WpGraph.subtree` resolves it before any segment arithmetic runs,
+which is also what keeps `stemSegments`' bare `Error` off the exit path.
 
 One exception, also in `src/ids.ts`: sort `blocked_by` targets with
 `compareBlockerIds`. A target is an unvalidated string — it need not name an existing

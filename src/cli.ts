@@ -29,10 +29,13 @@ interface CliArguments {
   readonly allReady: boolean;
   readonly force: boolean;
   readonly id: string | null;
+  readonly scope: string | null;
 }
 
 const COMMANDS = ["next", "show", "tree", "check", "start", "done"] as const;
 const ID_COMMANDS = new Set(["show", "start", "done"]);
+/** The two commands that read a queue, and so are the two `--scope` can narrow. */
+const SCOPED_COMMANDS = new Set(["next", "tree"]);
 
 const HELP = `usage: wp [--dir PATH] [--json] {next,show,tree,check,start,done} ...
 
@@ -50,6 +53,7 @@ options:
   --dir PATH        work-package directory (default: ./wps)
   --json            emit machine-readable JSON
   --all             with next, print the whole ready queue
+  --scope ID        with next or tree, restrict to ID and everything under it
   --force           with start or done, skip the readiness and claim checks
   -h, --help        show this help message`;
 
@@ -64,6 +68,7 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
   let asJson = false;
   let allReady = false;
   let force = false;
+  let scope: string | null = null;
   let command: CliArguments["command"] | null = null;
   const commandArguments: string[] = [];
 
@@ -81,6 +86,21 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
         throw new UsageError("unrecognized argument: --force");
       }
       force = true;
+    } else if (argument === "--scope" || argument.startsWith("--scope=")) {
+      // A scope is the ID of a milestone, an epic or a single story; which of the
+      // three it is falls out of the stem depth, so there is nothing to declare.
+      if (command === null || !SCOPED_COMMANDS.has(command)) {
+        throw new UsageError("unrecognized argument: --scope");
+      }
+      const inline = argument.startsWith("--scope=")
+        ? argument.slice("--scope=".length)
+        : null;
+      const value = inline ?? argv[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-")) {
+        throw new UsageError("argument --scope: expected one value");
+      }
+      scope = value;
+      if (inline === null) index += 1;
     } else if (argument === "--dir") {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -119,6 +139,7 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
     allReady,
     force,
     id: ID_COMMANDS.has(command) ? (commandArguments[0] ?? null) : null,
+    scope,
   };
 }
 
@@ -139,14 +160,16 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
 
     const graph = loadGraph(args.directory);
     if (args.command === "next") {
-      process.stdout.write(formatNext(graph, args.allReady, args.asJson));
+      process.stdout.write(formatNext(graph, args.allReady, args.asJson, args.scope));
     }
     if (args.command === "show") {
       process.stdout.write(formatShow(graph, args.id as string, args.asJson));
     }
     if (args.command === "tree") {
       process.stdout.write(
-        args.asJson ? formatTreeJson(graph) : formatTree(graph, useColour()),
+        args.asJson
+          ? formatTreeJson(graph, args.scope)
+          : formatTree(graph, useColour(), args.scope),
       );
     }
     if (args.command === "start") {

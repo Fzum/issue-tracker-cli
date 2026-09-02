@@ -116,8 +116,15 @@ export function composePrompt(role: string, brief: string): string {
   return `${role.trimEnd()}${PROMPT_SEPARATOR}${brief.trimEnd()}\n`;
 }
 
-/** Read `wp next --all --json`, which is the whole scheduler. */
-export function parseReadyQueue(json: string): QueueEntry[] {
+/** One `wp tree --json` row, as much of it as the stall report reads. */
+interface TreeRow {
+  readonly id: string;
+  readonly status: string;
+  readonly blockers: readonly string[];
+}
+
+/** Whatever `wp --json` printed, as an array. An empty queue prints nothing at all. */
+function parseJsonArray(json: string, label: string): unknown[] {
   const trimmed = json.trim();
   if (!trimmed) return [];
 
@@ -125,13 +132,17 @@ export function parseReadyQueue(json: string): QueueEntry[] {
   try {
     parsed = JSON.parse(trimmed);
   } catch (error) {
-    throw new OrchestratorError(`cannot read the ready queue: ${errorMessage(error)}`);
+    throw new OrchestratorError(`cannot read ${label}: ${errorMessage(error)}`);
   }
   if (!Array.isArray(parsed)) {
-    throw new OrchestratorError("cannot read the ready queue: expected a JSON array");
+    throw new OrchestratorError(`cannot read ${label}: expected a JSON array`);
   }
+  return parsed;
+}
 
-  return parsed.map((entry): QueueEntry => {
+/** Read `wp next --all --json`, which is the whole scheduler. */
+export function parseReadyQueue(json: string): QueueEntry[] {
+  return parseJsonArray(json, "the ready queue").map((entry): QueueEntry => {
     const fields = (typeof entry === "object" && entry !== null ? entry : {}) as {
       id?: unknown;
       short_description?: unknown;
@@ -143,6 +154,28 @@ export function parseReadyQueue(json: string): QueueEntry[] {
       id: fields.id,
       description:
         typeof fields.short_description === "string" ? fields.short_description : "",
+    };
+  });
+}
+
+/** Read `wp tree --scope <id> --json`, which is why a scoped queue came back empty. */
+export function parseTreeRows(json: string): TreeRow[] {
+  return parseJsonArray(json, "the tree").map((entry): TreeRow => {
+    const fields = (typeof entry === "object" && entry !== null ? entry : {}) as {
+      id?: unknown;
+      status?: unknown;
+      unmet_blockers?: unknown;
+    };
+    if (typeof fields.id !== "string" || !fields.id) {
+      throw new OrchestratorError("cannot read the tree: a row has no id");
+    }
+    return {
+      id: fields.id,
+      // `null` is a container whose children carry no status — `wp check`'s problem.
+      status: typeof fields.status === "string" ? fields.status : "unknown",
+      blockers: Array.isArray(fields.unmet_blockers)
+        ? fields.unmet_blockers.filter((value): value is string => typeof value === "string")
+        : [],
     };
   });
 }
@@ -421,9 +454,30 @@ function wpRunner(repositoryRoot: string, wpsDirectory: string): WpRunner {
     );
 }
 
-/** `wp next --all --json` is the entire scheduler (execution model §2). */
-async function readyQueue(wp: WpRunner): Promise<QueueEntry[]> {
-  return parseReadyQueue(await wp(["next", "--all", "--json"], "wp next"));
+/**
+ * `wp next --all --json` is the entire scheduler (execution model §2), and
+ * `--scope` is the only thing that narrows it. The scope is one work-package ID;
+ * whether that means a milestone, an epic or a single story is the stem's
+ * business, not this file's.
+ */
+async function readyQueue(wp: WpRunner, scope: string | null): Promise<QueueEntry[]> {
+  const scoped = scope === null ? [] : ["--scope", scope];
+  return parseReadyQueue(await wp(["next", "--all", "--json", ...scoped], "wp next"));
+}
+
+/** The word for a scope — milestone, epic, story. `wp show` owns that derivation. */
+async function scopeType(wp: WpRunner, scope: string): Promise<string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await wp(["show", scope, "--json"], `wp show ${scope}`));
+  } catch (error) {
+    if (error instanceof OrchestratorError) throw error;
+    return "work package";
+  }
+  const type = (typeof parsed === "object" && parsed !== null ? parsed : {}) as {
+    type?: unknown;
+  };
+  return typeof type.type === "string" ? type.type : "work package";
 }
 
 export interface DriverConfig {
@@ -434,11 +488,13 @@ export interface DriverConfig {
   readonly role: string;
   /** The project's gate, run through `sh -c` so `&&` works. */
   readonly verifyCommand: string;
+  /** One work package to stay inside, with everything under it. `null` is the whole tree. */
+  readonly scope: string | null;
 }
 
 /** The real driver: `wp` for the tracker, git for isolation, `claude -p` for work. */
 export function createDriver(config: DriverConfig): Driver {
-  const { repositoryRoot, wpsDirectory, role, verifyCommand } = config;
+  const { repositoryRoot, wpsDirectory, role, verifyCommand, scope } = config;
   const logDirectory = join(repositoryRoot, LOG_DIRECTORY_NAME);
 
   const wp = wpRunner(repositoryRoot, wpsDirectory);
@@ -446,7 +502,7 @@ export function createDriver(config: DriverConfig): Driver {
     executeOrThrow(["git", ...arguments_], repositoryRoot, label);
 
   return {
-    ready: async () => (await readyQueue(wp)).map((entry) => entry.id),
+    ready: async () => (await readyQueue(wp, scope)).map((entry) => entry.id),
 
     claim: async (id) => {
       await wp(["start", id], `wp start ${id}`);
@@ -633,14 +689,47 @@ function readRole(path: string): string {
   }
 }
 
+/**
+ * Why a scoped run did nothing. `wp next` answers "what can start"; when a scope
+ * was named and the answer is "nothing", the useful next question is "why not",
+ * and the scoped tree already holds that answer per work package.
+ *
+ * A blocker that is not itself in the scope can never be released by this run —
+ * widening the scope is the only way out — so it is called out. That is set
+ * membership over the rows that came back, not a second opinion here about the
+ * stem grammar.
+ */
+async function printScopeStall(config: DriverConfig, scope: string): Promise<void> {
+  const wp = wpRunner(config.repositoryRoot, config.wpsDirectory);
+  const type = await scopeType(wp, scope);
+  const rows = parseTreeRows(await wp(["tree", "--scope", scope, "--json"], "wp tree"));
+  const inScope = new Set(rows.map((row) => row.id));
+
+  printLine(`wave 1: nothing ready in scope ${scope} (${type})`);
+  // The scope's own row says nothing its children do not — unless it is the only
+  // row, which is exactly the case of a scope naming one story.
+  for (const row of rows.length > 1 ? rows.slice(1) : rows) {
+    const blockers = row.blockers.map((id) =>
+      inScope.has(id) ? id : `${id} (outside scope)`,
+    );
+    const reason =
+      blockers.length === 0 ? row.status : `blocked by ${blockers.join(", ")}`;
+    printLine(`  ${row.id}  ${reason}`);
+  }
+}
+
 /** Print what the first wave would do, then stop. No claim, no agent, no merge. */
 async function printPlan(config: DriverConfig): Promise<void> {
-  const { repositoryRoot, wpsDirectory, role, verifyCommand } = config;
+  const { repositoryRoot, wpsDirectory, role, verifyCommand, scope } = config;
   const wp = wpRunner(repositoryRoot, wpsDirectory);
-  const queue = await readyQueue(wp);
+  const queue = await readyQueue(wp, scope);
 
   printLine("dry run: nothing is claimed, spawned or merged");
   if (queue.length === 0) {
+    if (scope !== null) {
+      await printScopeStall(config, scope);
+      return;
+    }
     printLine("wave 1: nothing ready — the queue is empty");
     return;
   }
@@ -676,10 +765,12 @@ interface CliArguments {
   readonly directory: string;
   readonly role: string | null;
   readonly verifyCommand: string;
+  readonly scope: string | null;
   readonly dryRun: boolean;
 }
 
-const HELP = `usage: orchestrate [--dir PATH] [--role PATH] [--verify COMMAND] [--dry-run]
+const HELP = `usage: orchestrate [--dir PATH] [--role PATH] [--scope ID] [--verify COMMAND]
+                   [--dry-run]
 
 Run the work queue with parallel agents: one worktree per ready work package,
 then merge the branches back one at a time.
@@ -687,6 +778,8 @@ then merge the branches back one at a time.
 options:
   --dir PATH        work-package directory (default: ./wps)
   --role PATH       worker role prompt (default: ./${ROLE_RELATIVE_PATH})
+  --scope ID        stay inside one work package and everything under it — a
+                    milestone, an epic or a single story (default: the whole tree)
   --verify COMMAND  the gate a merge must pass, run through sh -c
                     (default: ${DEFAULT_VERIFY_COMMAND})
   --dry-run         print the first wave's plan and stop
@@ -710,6 +803,7 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
   let directory = "wps";
   let role: string | null = null;
   let verifyCommand = DEFAULT_VERIFY_COMMAND;
+  let scope: string | null = null;
   let dryRun = false;
 
   /** The value a flag needs. Another flag is not a value, it is a missing one. */
@@ -738,6 +832,7 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
     if (name === "--dir") directory = flagValue();
     else if (name === "--role") role = flagValue();
     else if (name === "--verify") verifyCommand = flagValue();
+    else if (name === "--scope") scope = flagValue();
     // The whole argument, not the split name: `--wave-plan=1` must echo back
     // what the user actually typed.
     else throw new OrchestratorError(`unrecognized argument: ${argument}`);
@@ -746,7 +841,7 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
     if (inline === null) index += 1;
   }
 
-  return { directory, role, verifyCommand, dryRun };
+  return { directory, role, verifyCommand, scope, dryRun };
 }
 
 /**
@@ -762,7 +857,13 @@ async function prepareRun(args: CliArguments): Promise<DriverConfig> {
     args.role === null ? join(repositoryRoot, ROLE_RELATIVE_PATH) : resolve(args.role),
   );
   await requireCleanWorktree(repositoryRoot, wpsDirectory);
-  return { repositoryRoot, wpsDirectory, role, verifyCommand: args.verifyCommand };
+  return {
+    repositoryRoot,
+    wpsDirectory,
+    role,
+    verifyCommand: args.verifyCommand,
+    scope: args.scope,
+  };
 }
 
 /** The last thing a run prints: one headline, then whatever needs a human. */
@@ -791,6 +892,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 
     requireAgentCommand();
     const summary = await runQueue(createDriver(config), printLine);
+    // A scoped run that never got a wave off the ground looks identical to a
+    // finished one. Say which it was before the summary claims success.
+    if (config.scope !== null && summary.waves === 0) {
+      await printScopeStall(config, config.scope);
+    }
     printSummary(summary);
     return summary.failed.length > 0 ? 1 : 0;
   } catch (error) {

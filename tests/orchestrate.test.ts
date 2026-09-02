@@ -126,10 +126,13 @@ class RepositoryFixture {
   readonly root: string;
   readonly directory: string;
   readonly rolePath: string;
+  private readonly binDirectory: string;
+  private hasFakeAgent = false;
 
   constructor() {
     const base = mkdtempSync(join(tmpdir(), "orchestrate-test-"));
     temporaryDirectories.push(base);
+    this.binDirectory = join(base, "bin");
     // The repository sits one level down, because an agent worktree is its
     // sibling: `wt-<id>` must land inside the directory afterEach deletes.
     this.root = join(base, "repo");
@@ -151,6 +154,23 @@ class RepositoryFixture {
 
   givenStaged(path: string): void {
     this.git("add", path);
+  }
+
+  /** A WP with children carries no status of its own (invariant 4). */
+  givenContainer(id: string, description: string): void {
+    const lines = ["---", `short_description: "${description}"`, "---", "", "Ticket body.", ""];
+    writeFileSync(join(this.directory, `${id}.md`), lines.join("\n"), "utf8");
+  }
+
+  /**
+   * A `claude` on PATH that does nothing. `main` refuses to start without one, so
+   * a run that is expected to spawn no agent at all still needs it to exist.
+   */
+  givenFakeAgent(): void {
+    mkdirSync(this.binDirectory, { recursive: true });
+    const path = join(this.binDirectory, "claude");
+    writeFileSync(path, "#!/bin/sh\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    this.hasFakeAgent = true;
   }
 
   givenWp(id: string, description: string, blockedBy: readonly string[] = []): void {
@@ -193,12 +213,13 @@ class RepositoryFixture {
   }
 
   /** The real driver, pointed at this repository. */
-  driver(verifyCommand = "true"): Driver {
+  driver(verifyCommand = "true", scope: string | null = null): Driver {
     return createDriver({
       repositoryRoot: this.root,
       wpsDirectory: this.directory,
       role: "# Role\n",
       verifyCommand,
+      scope,
     });
   }
 
@@ -242,6 +263,9 @@ class RepositoryFixture {
       cwd: this.root,
       stdout: "pipe",
       stderr: "pipe",
+      ...(this.hasFakeAgent
+        ? { env: { ...process.env, PATH: `${this.binDirectory}:${process.env.PATH ?? ""}` } }
+        : {}),
     });
     const decoder = new TextDecoder();
     return {
@@ -844,5 +868,138 @@ describe("the command line", () => {
     // Then
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("run 'wp check'");
+  });
+});
+
+describe("scoped runs", () => {
+  test("given a scope when the driver is asked what is ready then only that subtree comes back", async () => {
+    // Given
+    const fixture = new RepositoryFixture();
+    fixture.givenContainer("wp-m1", "Milestone");
+    fixture.givenWp("wp-m1e1", "In scope");
+    fixture.givenWp("wp-m10", "Tenth milestone");
+    fixture.givenWp("wp-m2", "Out of scope");
+    fixture.givenCommittedRepository();
+
+    // When
+    const ready = await fixture.driver("true", "wp-m1").ready();
+
+    // Then
+    expect(ready).toEqual(["wp-m1e1"]);
+  });
+
+  test("given a scope when a dry run is asked for then only that subtree is planned", () => {
+    // Given
+    const fixture = new RepositoryFixture();
+    fixture.givenContainer("wp-m1", "Milestone");
+    fixture.givenWp("wp-m1e1", "Parse frontmatter");
+    fixture.givenWp("wp-m2", "Somewhere else entirely");
+    fixture.givenCommittedRepository();
+
+    // When
+    const result = fixture.runOrchestrator("--dry-run", "--scope", "wp-m1");
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("wave 1: 1 ready");
+    expect(result.stdout).toContain("wp-m1e1  Parse frontmatter");
+    expect(result.stdout).not.toContain("wp-m2");
+  });
+
+  test("given a scope with nothing ready when a dry run is asked for then it says why", () => {
+    // Given
+    const fixture = new RepositoryFixture();
+    fixture.givenContainer("wp-m1", "Milestone");
+    fixture.givenContainer("wp-m1e1", "Login epic");
+    fixture.givenWp("wp-m1e1u1", "Blocked from outside", ["wp-m2e1"]);
+    fixture.givenWp("wp-m1e1u2", "Already finished");
+    writeFileSync(
+      join(fixture.directory, "wp-m1e1u2.md"),
+      readFileSync(join(fixture.directory, "wp-m1e1u2.md"), "utf8").replace(
+        "status: todo",
+        "status: done",
+      ),
+      "utf8",
+    );
+    fixture.givenContainer("wp-m2", "Other milestone");
+    fixture.givenWp("wp-m2e1", "The blocker");
+    fixture.givenCommittedRepository();
+
+    // When
+    const result = fixture.runOrchestrator("--dry-run", "--scope", "wp-m1e1");
+
+    // Then every leaf in scope is accounted for, and the blocker is named as unreachable
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("wave 1: nothing ready in scope wp-m1e1 (epic)");
+    expect(result.stdout).toContain("wp-m1e1u1  blocked by wp-m2e1 (outside scope)");
+    expect(result.stdout).toContain("wp-m1e1u2  done");
+    expect(result.stdout).not.toContain("the queue is empty");
+  });
+
+  test("given a scope with nothing ready when the run starts then it explains and still succeeds", () => {
+    // Given
+    const fixture = new RepositoryFixture();
+    fixture.givenContainer("wp-m1", "Milestone");
+    fixture.givenWp("wp-m1e1", "Blocked from outside", ["wp-m2"]);
+    fixture.givenWp("wp-m2", "The blocker");
+    fixture.givenCommittedRepository();
+    fixture.givenFakeAgent();
+
+    // When
+    const result = fixture.runOrchestrator("--scope", "wp-m1");
+
+    // Then an empty queue stays a success; the report is what changes
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("wave 1: nothing ready in scope wp-m1 (milestone)");
+    expect(result.stdout).toContain("wp-m1e1  blocked by wp-m2 (outside scope)");
+    expect(result.stdout).toContain("queue empty after 0 wave(s)");
+    expect(fixture.contentOf("wp-m1e1")).toContain("status: todo");
+  });
+
+  test("given a story scope with nothing ready when the run starts then the story itself is reported", () => {
+    // Given a scope that is its own only row
+    const fixture = new RepositoryFixture();
+    fixture.givenContainer("wp-m1", "Milestone");
+    fixture.givenContainer("wp-m1e1", "Epic");
+    fixture.givenWp("wp-m1e1u1", "Blocked", ["wp-m1e1u2"]);
+    fixture.givenWp("wp-m1e1u2", "The blocker");
+    fixture.givenCommittedRepository();
+    fixture.givenFakeAgent();
+
+    // When
+    const result = fixture.runOrchestrator("--scope", "wp-m1e1u1");
+
+    // Then the blocker is a sibling story: inside the epic, outside this scope
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("wave 1: nothing ready in scope wp-m1e1u1 (story)");
+    expect(result.stdout).toContain("wp-m1e1u1  blocked by wp-m1e1u2 (outside scope)");
+  });
+
+  test("given a scope with no file when run then it is refused before anything starts", () => {
+    // Given
+    const fixture = new RepositoryFixture();
+    fixture.givenWp("wp-m1e1", "Parse frontmatter");
+    fixture.givenCommittedRepository();
+
+    // When
+    const result = fixture.runOrchestrator("--dry-run", "--scope", "wp-m9");
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("unknown work-package ID: wp-m9");
+  });
+
+  test("given --scope with no value when run then one value is demanded", () => {
+    // Given
+    const fixture = new RepositoryFixture();
+    fixture.givenWp("wp-m1e1", "Parse frontmatter");
+    fixture.givenCommittedRepository();
+
+    // When
+    const result = fixture.runOrchestrator("--dry-run", "--scope");
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("argument --scope: expected one value");
   });
 });

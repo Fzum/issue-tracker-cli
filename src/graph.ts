@@ -5,7 +5,7 @@
  * writes the filesystem.
  */
 
-import { compareWpIds, parentId, stemSegments } from "./ids.ts";
+import { compareWpIds, isWithin, parentId, stemSegments } from "./ids.ts";
 import { UnknownWpError, type ScannedFile, type Wp } from "./model.ts";
 
 const TYPE_NAMES = new Map([
@@ -154,8 +154,26 @@ export class WpGraph {
     ];
   }
 
-  readyQueue(): Wp[] {
-    return this.orderedIds
+  /**
+   * Invariant 3 again: the subtree rooted at `scope`, in `orderedIds` order. The
+   * stem depth is what makes this one derivation cover a milestone, an epic and a
+   * single story — the caller never says which it meant.
+   *
+   * The root must have a file: an unknown scope is an unknown ID (exit 2), and
+   * resolving it here is also what keeps `isWithin` off ungrammatical strings.
+   */
+  subtree(scope: string): string[] {
+    this.requireWp(scope);
+    return this.orderedIds.filter((id) => isWithin(id, scope));
+  }
+
+  /**
+   * A scope narrows *which* leaves are offered; it never relaxes what `ready`
+   * means. A leaf inside the scope blocked by one outside it stays unready and
+   * simply never appears — invariant 5 is computed first, filtered second.
+   */
+  readyQueue(scope: string | null = null): Wp[] {
+    return (scope === null ? this.orderedIds : this.subtree(scope))
       .filter((id) => this.isReady(id))
       .map((id) => this.requireWp(id));
   }
