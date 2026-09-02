@@ -138,6 +138,12 @@ without git, an agent or a repository — `FakeDriver` in the test file records 
 order. Add a step by adding a `Driver` method, never by reaching for git inside
 `runQueue`.
 
+Inside that seam the loop reads top-down as `runQueue` → `runAgent` → `integrate` →
+`runStep`. `runStep` is the one try/catch: it turns a refused `Driver` call into a
+`Failure` value and prints the one report line, so no other function needs a catch.
+The two that keep their own are deliberate — `undoMerge` **throws** (it aborts the
+run), and `discard` is best effort and never becomes a `Failure`.
+
 Load-bearing behaviour, all of it pinned by tests:
 
 1. **Claim serially before spawning anything.** A leaf that stays `todo` is offered

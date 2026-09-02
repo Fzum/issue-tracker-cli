@@ -6,10 +6,19 @@
  *
  * Nothing here plans. Readiness is recomputed by `wp next` on every wave, so a
  * dependency enforces itself by simply not appearing in the queue.
+ *
+ * Read it in five passes, top to bottom:
+ *   1. vocabulary       — ids, branches, worktrees, the prompt, the ready queue
+ *   2. the wave loop    — runQueue -> runAgent -> integrate -> runStep
+ *   3. running commands — the one `Bun.spawn` wrapper and the two reason readers
+ *   4. the driver       — `wp`, git and `claude -p` behind the `Driver` seam
+ *   5. the command line — argv, the preflights, the dry run, main
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+
+// ── 1. Vocabulary ────────────────────────────────────────────────────────────
 
 const TOOL_DIRECTORY = import.meta.dir;
 const CLI_PATH = join(TOOL_DIRECTORY, "wp.ts");
@@ -138,9 +147,46 @@ export function parseReadyQueue(json: string): QueueEntry[] {
   });
 }
 
+// ── 2. The wave loop — bookkeeping only: no git, no spawn, no `process.*` ─────
+
 interface AgentResult {
   readonly id: string;
   readonly failure: Failure | null;
+}
+
+/** What a refused step prints: `  <id>  <note>: <message>`. */
+interface StepReport {
+  readonly id: string;
+  readonly stage: Stage;
+  /** The words before the colon, e.g. `merge failed`. */
+  readonly note: string;
+  /**
+   * Set on the two refusals that leave an agent branch behind for a human (§7):
+   * a conflicting merge and a red gate.
+   */
+  readonly keepsBranch?: boolean;
+}
+
+/**
+ * Run one step of one work package. A refusal is a value, not an exception:
+ * `null` means it worked, a `Failure` means give up on this work package and
+ * move on to the next. Nothing here rethrows, because one dead agent or one red
+ * branch must not abandon the rest of the wave (§7).
+ */
+async function runStep(
+  action: () => Promise<void>,
+  step: StepReport,
+  report: Reporter,
+): Promise<Failure | null> {
+  try {
+    await action();
+    return null;
+  } catch (error) {
+    const message = errorMessage(error);
+    const kept = step.keepsBranch === true ? ` — ${branchName(step.id)} kept` : "";
+    report(`  ${step.id}  ${step.note}: ${message}${kept}`);
+    return { id: step.id, stage: step.stage, message };
+  }
 }
 
 /**
@@ -148,23 +194,80 @@ interface AgentResult {
  * must not abandon the rest of the wave, so its outcome is returned instead.
  */
 async function runAgent(driver: Driver, id: string, report: Reporter): Promise<AgentResult> {
-  try {
-    await driver.prepare(id);
-  } catch (error) {
-    report(`  ${id}  setup failed: ${errorMessage(error)}`);
-    return { id, failure: { id, stage: "setup", message: errorMessage(error) } };
-  }
+  const setup = await runStep(
+    () => driver.prepare(id),
+    { id, stage: "setup", note: "setup failed" },
+    report,
+  );
+  if (setup) return { id, failure: setup };
 
-  try {
-    await driver.work(id);
-  } catch (error) {
-    // The WP stays `doing` and the branch survives, so nothing is lost (§7).
-    report(`  ${id}  agent failed: ${errorMessage(error)}`);
-    return { id, failure: { id, stage: "agent", message: errorMessage(error) } };
-  }
+  // If the agent dies the WP stays `doing` and the branch survives, so nothing
+  // is lost (§7).
+  const agent = await runStep(
+    () => driver.work(id),
+    { id, stage: "agent", note: "agent failed" },
+    report,
+  );
+  if (agent) return { id, failure: agent };
 
   report(`  ${id}  agent finished`);
   return { id, failure: null };
+}
+
+/**
+ * Merge one finished branch, run the gate, release the work package — stopping
+ * at the first refusal. Returns that refusal, or `null` when the WP landed.
+ *
+ * The one thing that escapes as an exception is a merge that could not be
+ * undone: after that the main worktree is broken and no later branch in the
+ * wave may be merged onto it.
+ */
+async function integrate(driver: Driver, id: string, report: Reporter): Promise<Failure | null> {
+  const merge = await runStep(
+    () => driver.merge(id),
+    { id, stage: "merge", note: "merge failed", keepsBranch: true },
+    report,
+  );
+  if (merge) return merge;
+
+  const gate = await runStep(
+    () => driver.verify(),
+    { id, stage: "verify", note: "verify failed", keepsBranch: true },
+    report,
+  );
+  if (gate) {
+    // Undo the merge, or every later branch in this wave inherits the red suite
+    // and gets blamed for it (§8.4 rule 1).
+    try {
+      await driver.undoMerge();
+    } catch (undoError) {
+      throw new OrchestratorError(
+        `${id} left the main worktree mid-merge and it could not be undone: ${errorMessage(undoError)}`,
+      );
+    }
+    return gate;
+  }
+
+  // `wp done` only after a green gate, and only after a merge that really
+  // merged something — `driver.merge` refuses a branch with no commits of its
+  // own (§8.4 rule 2), so this cannot claim work that never landed.
+  const release = await runStep(
+    () => driver.release(id),
+    { id, stage: "release", note: "done failed" },
+    report,
+  );
+  if (release) return release;
+
+  report(`  ${id}  merged, suite green, done`);
+
+  // Best effort: by now the WP is merged, green and released, so a leftover
+  // worktree is worth a line, not a verdict.
+  try {
+    await driver.discard(id);
+  } catch (error) {
+    report(`  ${id}  cleanup left behind: ${errorMessage(error)}`);
+  }
+  return null;
 }
 
 /**
@@ -192,13 +295,13 @@ export async function runQueue(
     // comes back next wave for ever, so this is what makes the loop terminate.
     const claimed: string[] = [];
     for (const id of ready) {
-      try {
-        await driver.claim(id);
-        claimed.push(id);
-      } catch (error) {
-        report(`  ${id}  start failed: ${errorMessage(error)}`);
-        failed.push({ id, stage: "start", message: errorMessage(error) });
-      }
+      const refusal = await runStep(
+        () => driver.claim(id),
+        { id, stage: "start", note: "start failed" },
+        report,
+      );
+      if (refusal) failed.push(refusal);
+      else claimed.push(id);
     }
     if (claimed.length === 0) {
       report("nothing could be claimed; stopping instead of asking again");
@@ -211,58 +314,21 @@ export async function runQueue(
       if (result.failure) failed.push(result.failure);
     }
 
-    // Integration: one branch at a time, in queue order. That is what buys back
-    // attribution — if the suite goes red it is the branch just merged, because
-    // nothing else changed (§6 rule 3).
+    // Integration: one branch at a time, in queue order — never `Promise.all`.
+    // That is what buys back attribution — if the suite goes red it is the
+    // branch just merged, because nothing else changed (§6 rule 3).
     for (const { id, failure } of results) {
-      if (failure) continue;
-
-      try {
-        await driver.merge(id);
-      } catch (error) {
-        report(`  ${id}  merge failed: ${errorMessage(error)} — ${branchName(id)} kept`);
-        failed.push({ id, stage: "merge", message: errorMessage(error) });
-        continue;
-      }
-
-      try {
-        await driver.verify();
-      } catch (error) {
-        // Undo the merge, or every later branch in this wave inherits the red
-        // suite and gets blamed for it.
-        report(`  ${id}  verify failed: ${errorMessage(error)} — ${branchName(id)} kept`);
-        failed.push({ id, stage: "verify", message: errorMessage(error) });
-        try {
-          await driver.undoMerge();
-        } catch (undoError) {
-          throw new OrchestratorError(
-            `${id} left the main worktree mid-merge and it could not be undone: ${errorMessage(undoError)}`,
-          );
-        }
-        continue;
-      }
-
-      try {
-        await driver.release(id);
-      } catch (error) {
-        report(`  ${id}  done failed: ${errorMessage(error)}`);
-        failed.push({ id, stage: "release", message: errorMessage(error) });
-        continue;
-      }
-
-      merged.push(id);
-      report(`  ${id}  merged, suite green, done`);
-
-      try {
-        await driver.discard(id);
-      } catch (error) {
-        report(`  ${id}  cleanup left behind: ${errorMessage(error)}`);
-      }
+      if (failure) continue; // its agent never finished; there is nothing to merge
+      const refusal = await integrate(driver, id, report);
+      if (refusal) failed.push(refusal);
+      else merged.push(id);
     }
   }
 
   return { waves, merged, failed };
 }
+
+// ── 3. Running commands — the only place `Bun.spawn` is called ───────────────
 
 export interface CommandResult {
   readonly exitCode: number;
@@ -290,27 +356,35 @@ async function execute(command: readonly string[], cwd: string): Promise<Command
   return { exitCode: await child.exited, stdout, stderr };
 }
 
-async function checkedExecute(
+/**
+ * Why a command failed, in one line: stderr if it said anything, else stdout,
+ * else just the exit code. `||` and not `??`, because `firstLine("")` is `""`.
+ */
+function failureLine(result: CommandResult): string {
+  return firstLine(result.stderr) || firstLine(result.stdout) || `exit ${result.exitCode}`;
+}
+
+/** Run a command and take its stdout, or raise the reason it failed. */
+async function executeOrThrow(
   command: readonly string[],
   cwd: string,
   label: string,
 ): Promise<string> {
   const result = await execute(command, cwd);
   if (result.exitCode !== 0) {
-    throw new OrchestratorError(
-      `${label}: ${firstLine(result.stderr) || firstLine(result.stdout) || `exit ${result.exitCode}`}`,
-    );
+    throw new OrchestratorError(`${label}: ${failureLine(result)}`);
   }
   return result.stdout;
 }
 
+/** The first output line matching `pattern`, or failing that the generic reason. */
 function reasonFor(result: CommandResult, pattern: RegExp): string {
   const line = `${result.stdout}\n${result.stderr}`
     .split("\n")
     .map((candidate) => candidate.trim())
     .find((candidate) => pattern.test(candidate));
   if (line) return truncate(line);
-  return firstLine(result.stderr) || firstLine(result.stdout) || `exit ${result.exitCode}`;
+  return failureLine(result);
 }
 
 /**
@@ -325,6 +399,31 @@ export function verifyMessage(result: CommandResult): string {
 /** Why a merge failed, in one line. */
 export function mergeMessage(result: CommandResult): string {
   return reasonFor(result, /^(CONFLICT|error:|fatal:)/);
+}
+
+// ── 4. The driver — `wp`, git and `claude -p` behind the `Driver` seam ───────
+
+/** Invoke this tool's own `wp` against one work-package directory. */
+type WpRunner = (arguments_: readonly string[], label: string) => Promise<string>;
+
+/**
+ * `wp` as a subprocess, run through this same Bun binary rather than the
+ * shebang. The orchestrator imports nothing from `src/`, so the JSON `wp` prints
+ * is the contract between the two entry points — which is why the command line
+ * is assembled here once, for the driver and the dry run alike.
+ */
+function wpRunner(repositoryRoot: string, wpsDirectory: string): WpRunner {
+  return (arguments_, label) =>
+    executeOrThrow(
+      [process.execPath, CLI_PATH, "--dir", wpsDirectory, ...arguments_],
+      repositoryRoot,
+      label,
+    );
+}
+
+/** `wp next --all --json` is the entire scheduler (execution model §2). */
+async function readyQueue(wp: WpRunner): Promise<QueueEntry[]> {
+  return parseReadyQueue(await wp(["next", "--all", "--json"], "wp next"));
 }
 
 export interface DriverConfig {
@@ -342,19 +441,12 @@ export function createDriver(config: DriverConfig): Driver {
   const { repositoryRoot, wpsDirectory, role, verifyCommand } = config;
   const logDirectory = join(repositoryRoot, LOG_DIRECTORY_NAME);
 
-  const wp = (arguments_: readonly string[], label: string): Promise<string> =>
-    checkedExecute(
-      [process.execPath, CLI_PATH, "--dir", wpsDirectory, ...arguments_],
-      repositoryRoot,
-      label,
-    );
+  const wp = wpRunner(repositoryRoot, wpsDirectory);
   const git = (arguments_: readonly string[], label: string): Promise<string> =>
-    checkedExecute(["git", ...arguments_], repositoryRoot, label);
+    executeOrThrow(["git", ...arguments_], repositoryRoot, label);
 
   return {
-    ready: async () => parseReadyQueue(await wp(["next", "--all", "--json"], "wp next")).map(
-      (entry) => entry.id,
-    ),
+    ready: async () => (await readyQueue(wp)).map((entry) => entry.id),
 
     claim: async (id) => {
       await wp(["start", id], `wp start ${id}`);
@@ -369,7 +461,7 @@ export function createDriver(config: DriverConfig): Driver {
       // Only a Bun project needs this, and the tool is meant to drop into any
       // project (D10). Anything further is the role prompt's business.
       if (existsSync(join(worktree, "package.json"))) {
-        await checkedExecute(["bun", "install"], worktree, "bun install");
+        await executeOrThrow(["bun", "install"], worktree, "bun install");
       }
     },
 
@@ -420,8 +512,11 @@ export function createDriver(config: DriverConfig): Driver {
       if (result.exitCode !== 0) throw new OrchestratorError(verifyMessage(result));
     },
 
-    // `--keep` and not `--hard`: the tracker edits made by `wp start` are still
-    // uncommitted in this worktree, and `--hard` would throw them away.
+    /**
+     * `--keep` and not `--hard`: the tracker edits made by `wp start` are still
+     * uncommitted in this worktree, and `--hard` would throw the queue's own
+     * bookkeeping away.
+     */
     undoMerge: async () => {
       await git(["reset", "--keep", "ORIG_HEAD"], "git reset --keep ORIG_HEAD");
     },
@@ -430,10 +525,14 @@ export function createDriver(config: DriverConfig): Driver {
       await wp(["done", id], `wp done ${id}`);
     },
 
-    // `--force`, and the branch deleted independently of the worktree. By this
-    // point the WP is merged and green, so whatever is still in the worktree is
-    // junk — and `bun install` alone dirties a tracked lockfile, which would
-    // make a plain `remove` fail for every WP and leak the branch with it.
+    /**
+     * `--force`, and the branch deleted independently of the worktree. By this
+     * point the WP is merged and green, so whatever is still in the worktree is
+     * junk — and `bun install` alone dirties a tracked lockfile, which would
+     * make a plain `remove` fail for every WP and leak the branch with it. A
+     * leftover worktree also makes `prepare` refuse that id for ever, because
+     * it checks `existsSync` first.
+     */
     discard: async (id) => {
       const removal = await execute(
         ["git", "worktree", "remove", "--force", worktreePath(repositoryRoot, id)],
@@ -452,8 +551,10 @@ export function createDriver(config: DriverConfig): Driver {
   };
 }
 
-function writeLine(value = ""): void {
-  process.stdout.write(`${value}\n`);
+// ── 5. The command line — argv, the preflights, the dry run, main ────────────
+
+function printLine(line: string): void {
+  process.stdout.write(`${line}\n`);
 }
 
 async function repositoryRootOf(directory: string): Promise<string> {
@@ -462,6 +563,26 @@ async function repositoryRootOf(directory: string): Promise<string> {
     throw new OrchestratorError(`${directory} is not inside a git repository`);
   }
   return result.stdout.trim();
+}
+
+interface StatusEntry {
+  readonly staged: boolean;
+  readonly path: string;
+}
+
+/**
+ * One `git status --porcelain` line. The first column is the index, and it is
+ * the one that matters: `git merge` refuses to run while anything at all is
+ * staged, even for a path the merge never touches, so a staged file is never
+ * "owned" however it is named — admitting one means paying for a whole wave of
+ * agents and then failing every merge. `?` in that column means untracked,
+ * which is not staged. A rename prints `old -> new`; the new name is on disk.
+ */
+function parseStatusLine(line: string): StatusEntry {
+  return {
+    staged: !" ?".includes(line[0] ?? " "),
+    path: line.slice(3).split(" -> ").at(-1) ?? "",
+  };
 }
 
 /**
@@ -473,28 +594,22 @@ async function requireCleanWorktree(
   repositoryRoot: string,
   wpsDirectory: string,
 ): Promise<void> {
-  const status = await checkedExecute(
+  const status = await executeOrThrow(
     ["git", "status", "--porcelain"],
     repositoryRoot,
     "git status",
   );
+  // Unstaged changes here are expected on every run but the first: they are the
+  // orchestrator's own output, not somebody's work in progress.
   const owned = [relative(repositoryRoot, wpsDirectory), LOG_DIRECTORY_NAME];
+  const isOwned = (path: string): boolean =>
+    owned.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+
   const dirty = status
     .split("\n")
     .filter((line) => line.trim())
-    .map((line) => ({
-      // The index column. `git merge` refuses while anything at all is staged,
-      // even a path the merge never touches, so a staged file is never "owned"
-      // however it is named. `?` marks untracked, which is not staged.
-      staged: !" ?".includes(line[0] ?? " "),
-      path: line.slice(3).split(" -> ").at(-1) ?? "",
-    }))
-    .filter(
-      ({ staged, path }) =>
-        path &&
-        (staged ||
-          !owned.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))),
-    )
+    .map(parseStatusLine)
+    .filter(({ staged, path }) => path !== "" && (staged || !isOwned(path)))
     .map(({ path }) => path);
 
   if (dirty.length > 0) {
@@ -519,45 +634,33 @@ function readRole(path: string): string {
 }
 
 /** Print what the first wave would do, then stop. No claim, no agent, no merge. */
-async function printPlan(
-  repositoryRoot: string,
-  wpsDirectory: string,
-  role: string,
-  verifyCommand: string,
-): Promise<void> {
-  const queue = parseReadyQueue(
-    await checkedExecute(
-      [process.execPath, CLI_PATH, "--dir", wpsDirectory, "next", "--all", "--json"],
-      repositoryRoot,
-      "wp next",
-    ),
-  );
-  writeLine("dry run: nothing is claimed, spawned or merged");
+async function printPlan(config: DriverConfig): Promise<void> {
+  const { repositoryRoot, wpsDirectory, role, verifyCommand } = config;
+  const wp = wpRunner(repositoryRoot, wpsDirectory);
+  const queue = await readyQueue(wp);
+
+  printLine("dry run: nothing is claimed, spawned or merged");
   if (queue.length === 0) {
-    writeLine("wave 1: nothing ready — the queue is empty");
+    printLine("wave 1: nothing ready — the queue is empty");
     return;
   }
 
-  writeLine(`wave 1: ${queue.length} ready`);
+  printLine(`wave 1: ${queue.length} ready`);
   for (const entry of queue) {
-    const brief = await checkedExecute(
-      [process.execPath, CLI_PATH, "--dir", wpsDirectory, "show", entry.id],
-      repositoryRoot,
-      `wp show ${entry.id}`,
-    );
+    const brief = await wp(["show", entry.id], `wp show ${entry.id}`);
     const prompt = composePrompt(role, brief);
-    writeLine(`  ${entry.id}  ${entry.description}`);
-    writeLine(`    wp start ${entry.id}`);
-    writeLine(
+    printLine(`  ${entry.id}  ${entry.description}`);
+    printLine(`    wp start ${entry.id}`);
+    printLine(
       `    git worktree add ${worktreePath(repositoryRoot, entry.id)} -b ${branchName(entry.id)}`,
     );
-    writeLine(
+    printLine(
       `    ${AGENT_COMMAND} -p <prompt> --permission-mode acceptEdits  (${prompt.length} chars, log: ${LOG_DIRECTORY_NAME}/${entry.id}.log)`,
     );
   }
-  writeLine("  then, one branch at a time:");
+  printLine("  then, one branch at a time:");
   for (const entry of queue) {
-    writeLine(
+    printLine(
       `    git merge --no-ff ${branchName(entry.id)} && ${verifyCommand} && wp done ${entry.id}`,
     );
   }
@@ -594,13 +697,23 @@ exit codes:
   1                 the queue drained but something needs a human
   2                 usage error, or the repository is not ready`;
 
+/** `--dir=wps` -> `["--dir", "wps"]`; `--dir` -> `["--dir", null]`. */
+function splitFlag(argument: string): readonly [string, string | null] {
+  const separator = argument.indexOf("=");
+  return separator === -1
+    ? [argument, null]
+    : [argument.slice(0, separator), argument.slice(separator + 1)];
+}
+
+/** Returns null when help was requested; throws `OrchestratorError` on a bad argv. */
 function parseArguments(argv: readonly string[]): CliArguments | null {
   let directory = "wps";
   let role: string | null = null;
   let verifyCommand = DEFAULT_VERIFY_COMMAND;
   let dryRun = false;
 
-  const valueOf = (index: number, name: string): string => {
+  /** The value a flag needs. Another flag is not a value, it is a missing one. */
+  const valueAfter = (index: number, name: string): string => {
     const value = argv[index];
     if (value === undefined || value.startsWith("-")) {
       throw new OrchestratorError(`argument ${name}: expected one value`);
@@ -610,70 +723,76 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] ?? "";
-    if (argument === "--help" || argument === "-h") {
-      return null;
-    } else if (argument === "--dry-run") {
+    if (argument === "--help" || argument === "-h") return null;
+    if (argument === "--dry-run") {
       dryRun = true;
-    } else if (argument === "--dir") {
-      directory = valueOf(index + 1, "--dir");
-      index += 1;
-    } else if (argument.startsWith("--dir=")) {
-      directory = argument.slice("--dir=".length);
-    } else if (argument === "--role") {
-      role = valueOf(index + 1, "--role");
-      index += 1;
-    } else if (argument.startsWith("--role=")) {
-      role = argument.slice("--role=".length);
-    } else if (argument === "--verify") {
-      verifyCommand = valueOf(index + 1, "--verify");
-      index += 1;
-    } else if (argument.startsWith("--verify=")) {
-      verifyCommand = argument.slice("--verify=".length);
-    } else {
-      throw new OrchestratorError(`unrecognized argument: ${argument}`);
+      continue;
     }
+
+    // `--flag=value` and `--flag value` are one option, so split the `=` form
+    // once and read the value from whichever side carried it — lazily, so that
+    // an unrecognized flag reports itself instead of a missing value.
+    const [name, inline] = splitFlag(argument);
+    const flagValue = (): string => inline ?? valueAfter(index + 1, name);
+
+    if (name === "--dir") directory = flagValue();
+    else if (name === "--role") role = flagValue();
+    else if (name === "--verify") verifyCommand = flagValue();
+    // The whole argument, not the split name: `--wave-plan=1` must echo back
+    // what the user actually typed.
+    else throw new OrchestratorError(`unrecognized argument: ${argument}`);
+
+    // The `--flag value` form spent the next argument as well.
+    if (inline === null) index += 1;
   }
 
   return { directory, role, verifyCommand, dryRun };
+}
+
+/**
+ * Everything a run needs, resolved from argv and the repository — plus every
+ * reason to refuse, before anything is claimed or spawned. The order is
+ * load-bearing: the repository must exist before a role path relative to it
+ * means anything.
+ */
+async function prepareRun(args: CliArguments): Promise<DriverConfig> {
+  const repositoryRoot = await repositoryRootOf(process.cwd());
+  const wpsDirectory = resolve(process.cwd(), args.directory);
+  const role = readRole(
+    args.role === null ? join(repositoryRoot, ROLE_RELATIVE_PATH) : resolve(args.role),
+  );
+  await requireCleanWorktree(repositoryRoot, wpsDirectory);
+  return { repositoryRoot, wpsDirectory, role, verifyCommand: args.verifyCommand };
+}
+
+/** The last thing a run prints: one headline, then whatever needs a human. */
+function printSummary(summary: RunReport): void {
+  printLine(
+    `queue empty after ${summary.waves} wave(s): ${summary.merged.length} merged, ${summary.failed.length} left for a human`,
+  );
+  for (const failure of summary.failed) {
+    printLine(`  ${failure.id}  ${failure.stage}: ${failure.message}`);
+  }
 }
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   try {
     const args = parseArguments(argv);
     if (args === null) {
-      writeLine(HELP);
+      printLine(HELP);
       return 0;
     }
 
-    const repositoryRoot = await repositoryRootOf(process.cwd());
-    const wpsDirectory = resolve(process.cwd(), args.directory);
-    const role = readRole(
-      args.role === null ? join(repositoryRoot, ROLE_RELATIVE_PATH) : resolve(args.role),
-    );
-    await requireCleanWorktree(repositoryRoot, wpsDirectory);
-
+    const config = await prepareRun(args);
     if (args.dryRun) {
-      await printPlan(repositoryRoot, wpsDirectory, role, args.verifyCommand);
+      await printPlan(config);
       return 0;
     }
 
     requireAgentCommand();
-    const report = await runQueue(
-      createDriver({
-        repositoryRoot,
-        wpsDirectory,
-        role,
-        verifyCommand: args.verifyCommand,
-      }),
-      writeLine,
-    );
-    writeLine(
-      `queue empty after ${report.waves} wave(s): ${report.merged.length} merged, ${report.failed.length} left for a human`,
-    );
-    for (const failure of report.failed) {
-      writeLine(`  ${failure.id}  ${failure.stage}: ${failure.message}`);
-    }
-    return report.failed.length > 0 ? 1 : 0;
+    const summary = await runQueue(createDriver(config), printLine);
+    printSummary(summary);
+    return summary.failed.length > 0 ? 1 : 0;
   } catch (error) {
     if (error instanceof OrchestratorError) {
       process.stderr.write(`orchestrate: ${error.message}\n`);
