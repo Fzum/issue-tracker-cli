@@ -8,10 +8,10 @@ This is a standalone repository. Everything it needs is inside it:
 
 | Path | What it is |
 |---|---|
-| `wp.ts` | The entire CLI (~830 lines, zero runtime dependencies) |
+| `wp.ts` | The entire CLI (~980 lines, zero runtime dependencies) |
 | `tests/wp.test.ts` | The whole suite — Given/When/Then, real files in temp dirs |
-| `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, exit codes |
-| `docs/vision.md` | Raw brainstorming plus the decision log D1–D8, with the rationale for every constraint below |
+| `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit codes |
+| `docs/vision.md` | Raw brainstorming plus the decision log D1–D9, with the rationale for every constraint below |
 
 Read `docs/design.md` before changing CLI behaviour, and `docs/vision.md` before
 questioning a constraint — most surprising choices are deliberate and have a recorded
@@ -34,15 +34,18 @@ invoke `wp.ts` by absolute path.
 
 ## What this is
 
-A read-only work-queue CLI over markdown files. The filesystem *is* the tracker — no
-database, no server, no write path. The primary runtime question it answers is
-"what should an agent work on next?".
+A work-queue CLI over markdown files. The filesystem *is* the tracker — no database,
+no server. The primary runtime question it answers is "what should an agent work on
+next?"; `wp start` / `wp done` then let the agent answer it without hand-editing.
 
 ## Architecture
 
 `wp.ts` is organised as a pipeline of exported groups that are each testable alone:
 
 `parseFrontmatter` / `parseWp` → `scanDirectory` → `WpGraph` → `check` → CLI printers → `main`
+
+The write path branches off the same graph: `startWp` / `finishWp` guard the
+transition, then `setStatus` rewrites one line.
 
 `loadGraph(dir)` is the read path for `next`/`show`/`tree`: it refuses to build a graph
 if any file is unparseable or badly named, telling the caller to run `wp check`.
@@ -64,8 +67,13 @@ Changes that violate these contradict the design, not just the code:
    `wp check` reports it as a problem. `wp next` returns leaves only.
 5. **Readiness includes ancestors.** A leaf is ready only when its own *and every
    ancestor's* `blocked_by` targets resolve to `done` (`WpGraph.isReady`).
-6. **Read-only.** Agents flip `status` with an ordinary file edit; the CLI never writes.
-   Write commands (`wp start`, `wp new`, `wp mv`) are deliberately deferred.
+6. **One writer, one line.** `wp start` / `wp done` are the only write path, and
+   `setStatus` only ever *replaces* an existing `status:` line — never inserts one,
+   never re-serializes the frontmatter, always via temp-file + rename. Everything
+   else stays read-only, and agents may still flip `status` by hand. `wp new` and
+   `wp mv` are still deliberately deferred. An unmet `blocked_by` target is the only
+   thing `wp start` refuses on — not the current status, and not another leaf being
+   `doing` (D9 records why that guard was removed); `--force` overrides even that.
 7. **The frontmatter parser is a YAML subset on purpose.** Nested maps, multiline
    scalars, anchors and flow mappings raise `FrontmatterParseError` rather than being
    silently misread — a misparsed `blocked_by` would corrupt the queue. Do not swap in a

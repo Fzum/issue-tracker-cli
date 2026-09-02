@@ -1,15 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   check,
+  finishWp,
   FrontmatterError,
   FrontmatterParseError,
   loadGraph,
   parentId,
   parseWp,
   scanDirectory,
+  setStatus,
+  startWp,
+  TransitionError,
+  UnknownWpError,
   type Problem,
   type WpGraph,
 } from "../wp.ts";
@@ -72,6 +77,10 @@ class Fixture {
 
   givenGraph(): WpGraph {
     return loadGraph(this.directory);
+  }
+
+  contentOf(filename: string): string {
+    return readFileSync(join(this.directory, filename), "utf8");
   }
 
   runCli(...arguments_: string[]): CliResult {
@@ -856,5 +865,417 @@ describe("CLI", () => {
     // Then
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("cannot read directory");
+  });
+});
+
+describe("write", () => {
+  test("given a leaf with a body and extra keys when its status is set then only the status line changes", () => {
+    // Given
+    const fixture = new Fixture();
+    const path = fixture.givenRawFile(
+      "wp-m1.md",
+      "---\n# a comment\nstatus: todo\nowner: agent-7\nshort_description: \"First\"\n---\n\n## Context\nstatus: not this one.\n",
+    );
+
+    // When
+    setStatus(path, "doing");
+
+    // Then
+    expect(fixture.contentOf("wp-m1.md")).toBe(
+      "---\n# a comment\nstatus: doing\nowner: agent-7\nshort_description: \"First\"\n---\n\n## Context\nstatus: not this one.\n",
+    );
+  });
+
+  test("given carriage return line endings when the status is set then the endings are preserved", () => {
+    // Given
+    const fixture = new Fixture();
+    const path = fixture.givenRawFile(
+      "wp-m1.md",
+      "---\r\nstatus: todo\r\nshort_description: \"First\"\r\n---\r\nBody\r\n",
+    );
+
+    // When
+    setStatus(path, "done");
+
+    // Then
+    expect(fixture.contentOf("wp-m1.md")).toBe(
+      "---\r\nstatus: done\r\nshort_description: \"First\"\r\n---\r\nBody\r\n",
+    );
+  });
+
+  test("given a file without a trailing newline when the status is set then none is added", () => {
+    // Given
+    const fixture = new Fixture();
+    const path = fixture.givenRawFile(
+      "wp-m1.md",
+      "---\nstatus: todo\nshort_description: \"First\"\n---\nNo trailing newline",
+    );
+
+    // When
+    setStatus(path, "doing");
+
+    // Then
+    expect(fixture.contentOf("wp-m1.md")).toBe(
+      "---\nstatus: doing\nshort_description: \"First\"\n---\nNo trailing newline",
+    );
+  });
+
+  test("given a leaf without a status field when its status is set then a frontmatter error is raised", () => {
+    // Given
+    const fixture = new Fixture();
+    const path = fixture.givenWp("wp-m1", { status: null, description: "First" });
+
+    // When / Then
+    expect(() => setStatus(path, "doing")).toThrow(FrontmatterError);
+    expect(fixture.contentOf("wp-m1.md")).not.toContain("status:");
+  });
+});
+
+describe("start", () => {
+  test("given a ready leaf when started then its file records doing", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m1");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: doing");
+  });
+
+  test("given a leaf already doing when started again then it stays doing", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "doing", description: "First" });
+    const before = fixture.contentOf("wp-m1.md");
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m1");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1.md")).toBe(before);
+  });
+
+  test("given a container when started then a transition error is raised", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { description: "Story" });
+    const graph = fixture.givenGraph();
+
+    // When / Then
+    expect(() => startWp(graph, "wp-m1")).toThrow(TransitionError);
+    expect(() => startWp(graph, "wp-m1")).toThrow("container");
+  });
+
+  test("given another leaf already doing when a second is started then both are doing", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "doing", description: "First" });
+    fixture.givenWp("wp-m2", { description: "Second" });
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m2");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: doing");
+  });
+
+  test("given a blocked leaf when started then the blocker is reported", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    fixture.givenWp("wp-m2", { description: "Second", blockedBy: ["wp-m1"] });
+    const graph = fixture.givenGraph();
+
+    // When / Then
+    expect(() => startWp(graph, "wp-m2")).toThrow("blocked by wp-m1");
+    expect(fixture.contentOf("wp-m2.md")).toContain("status: todo");
+  });
+
+  test("given a leaf whose ancestor is blocked when started then the blocker is reported", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    fixture.givenWp("wp-m2", {
+      status: null,
+      description: "Second",
+      blockedBy: ["wp-m1"],
+    });
+    fixture.givenWp("wp-m2e1", { description: "Second epic" });
+    const graph = fixture.givenGraph();
+
+    // When / Then
+    expect(() => startWp(graph, "wp-m2e1")).toThrow("blocked by wp-m1");
+  });
+
+  test("given a done leaf when started then it is reopened as doing", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "done", description: "First" });
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m1");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: doing");
+  });
+
+  test("given a blocked leaf when started with force then its file records doing", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    fixture.givenWp("wp-m2", { description: "Second", blockedBy: ["wp-m1"] });
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m2", true);
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m2.md")).toContain("status: doing");
+  });
+
+  test("given a doing story under one epic when a story under another is started then it succeeds", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Epic one" });
+    fixture.givenWp("wp-m1e1u1", { status: "doing", description: "Story one" });
+    fixture.givenWp("wp-m1e2", { status: null, description: "Epic two" });
+    fixture.givenWp("wp-m1e2u1", { description: "Story two" });
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m1e2u1");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1e1u1.md")).toContain("status: doing");
+  });
+
+  test("given an unknown ID when started then an unknown work-package error is raised", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    const graph = fixture.givenGraph();
+
+    // When / Then
+    expect(() => startWp(graph, "wp-m9")).toThrow(UnknownWpError);
+  });
+});
+
+describe("done", () => {
+  test("given a doing leaf when finished then its file records done", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "doing", description: "First" });
+
+    // When
+    const finished = finishWp(fixture.givenGraph(), "wp-m1");
+
+    // Then
+    expect(finished.status).toBe("done");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: done");
+  });
+
+  test("given a leaf already done when finished again then it stays done", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "done", description: "First" });
+    const before = fixture.contentOf("wp-m1.md");
+
+    // When
+    const finished = finishWp(fixture.givenGraph(), "wp-m1");
+
+    // Then
+    expect(finished.status).toBe("done");
+    expect(fixture.contentOf("wp-m1.md")).toBe(before);
+  });
+
+  test("given a todo leaf when finished then it is reported as not started", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    const graph = fixture.givenGraph();
+
+    // When / Then
+    expect(() => finishWp(graph, "wp-m1")).toThrow("is todo, not doing");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: todo");
+  });
+
+  test("given a container when finished then a transition error is raised", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { description: "Story" });
+    const graph = fixture.givenGraph();
+
+    // When / Then
+    expect(() => finishWp(graph, "wp-m1")).toThrow(TransitionError);
+  });
+
+  test("given a todo leaf when finished with force then its file records done", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+
+    // When
+    const finished = finishWp(fixture.givenGraph(), "wp-m1", true);
+
+    // Then
+    expect(finished.status).toBe("done");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: done");
+  });
+});
+
+describe("CLI transitions", () => {
+  test("given a ready leaf when start runs then the row is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+
+    // When
+    const result = fixture.runCli("start", "wp-m1", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("wp-m1\tdoing\tFirst\n");
+  });
+
+  test("given a ready leaf when start JSON runs then the queue shape is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+
+    // When
+    const result = fixture.runCli(
+      "start",
+      "wp-m1",
+      "--json",
+      "--dir",
+      fixture.directory,
+    );
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "wp-m1",
+      short_description: "First",
+      status: "doing",
+    });
+  });
+
+  test("given a started story when tree runs then its ancestors roll up to doing", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Epic" });
+    fixture.givenWp("wp-m1e1u1", { description: "Story one" });
+    fixture.givenWp("wp-m1e1u2", { description: "Story two" });
+
+    // When
+    fixture.runCli("start", "wp-m1e1u1", "--dir", fixture.directory);
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      "wp-m1\tdoing\tMilestone\n" +
+        "  wp-m1e1\tdoing\tEpic\n" +
+        "    wp-m1e1u1\tdoing\tStory one\n" +
+        "    wp-m1e1u2\ttodo\tStory two\n",
+    );
+  });
+
+  test("given a blocked leaf when start runs then exit two reports the blocker", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    fixture.givenWp("wp-m2", { description: "Second", blockedBy: ["wp-m1"] });
+
+    // When
+    const result = fixture.runCli("start", "wp-m2", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("wp: wp-m2 is blocked by wp-m1");
+  });
+
+  test("given a blocked leaf when start runs with force then exit zero is returned", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    fixture.givenWp("wp-m2", { description: "Second", blockedBy: ["wp-m1"] });
+
+    // When
+    const result = fixture.runCli(
+      "start",
+      "wp-m2",
+      "--force",
+      "--dir",
+      fixture.directory,
+    );
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("wp-m2\tdoing\tSecond\n");
+  });
+
+  test("given a doing leaf when done runs then the row is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "doing", description: "First" });
+
+    // When
+    const result = fixture.runCli("done", "wp-m1", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("wp-m1\tdone\tFirst\n");
+  });
+
+  test("given no ID when start runs then exit two is returned", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+
+    // When
+    const result = fixture.runCli("start", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("start requires exactly one ID");
+  });
+
+  test("given force on next when it runs then exit two is returned", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+
+    // When
+    const result = fixture.runCli("next", "--force", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("unrecognized argument: --force");
+  });
+
+  test("given an unparseable file when start runs then exit two is returned", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First" });
+    fixture.givenRawFile("wp-m2.md", "no frontmatter here\n");
+
+    // When
+    const result = fixture.runCli("start", "wp-m1", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("run 'wp check'");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: todo");
   });
 });

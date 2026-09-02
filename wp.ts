@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
-/** Read-only command line interface for markdown-native work packages. */
+/** Command line interface for markdown-native work packages. */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, extname, join, parse } from "node:path";
 
 const STEM_PATTERN = /^wp-(?:[a-z][0-9]+)+$/;
@@ -36,6 +43,7 @@ export class DirectoryError extends WpError {}
 export class UnknownWpError extends WpError {}
 export class FrontmatterError extends WpError {}
 export class FrontmatterParseError extends WpError {}
+export class TransitionError extends WpError {}
 class UsageError extends WpError {}
 
 export class Wp {
@@ -578,6 +586,122 @@ export function check(scanned: readonly ScannedFile[]): Problem[] {
   return problems.sort(compareProblems);
 }
 
+function isFieldLine(line: string, key: string): boolean {
+  const raw = lineWithoutEnding(line);
+  if (/^\s/.test(raw)) return false;
+  const separator = raw.indexOf(":");
+  return separator !== -1 && raw.slice(0, separator).trim() === key;
+}
+
+function writeAtomically(path: string, content: string): void {
+  const temporaryPath = `${path}.wp-tmp`;
+  try {
+    writeFileSync(temporaryPath, content, "utf8");
+    renameSync(temporaryPath, path);
+  } catch (error) {
+    rmSync(temporaryPath, { force: true });
+    throw new DirectoryError(`cannot write ${path}: ${errorMessage(error)}`);
+  }
+}
+
+/**
+ * Rewrite the single `status:` line inside a work package's frontmatter,
+ * leaving every other byte of the file untouched. Never inserts the field.
+ */
+export function setStatus(path: string, status: string): void {
+  let content: string;
+  try {
+    content = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path));
+  } catch (error) {
+    throw new DirectoryError(`cannot read ${path}: ${errorMessage(error)}`);
+  }
+
+  const lines = linesWithEndings(content);
+  if (lines.length === 0 || lineWithoutEnding(lines[0] ?? "") !== "---") {
+    throw new FrontmatterError("frontmatter block missing");
+  }
+  const closingIndex = lines.findIndex(
+    (line, index) => index > 0 && lineWithoutEnding(line) === "---",
+  );
+  if (closingIndex === -1) {
+    throw new FrontmatterError("frontmatter block unterminated");
+  }
+
+  const statusIndex = lines.findIndex(
+    (line, index) => index > 0 && index < closingIndex && isFieldLine(line, "status"),
+  );
+  if (statusIndex === -1) {
+    throw new FrontmatterError(`no status field in ${basename(path)}`);
+  }
+
+  const line = lines[statusIndex] ?? "";
+  lines[statusIndex] = `status: ${status}${line.slice(lineWithoutEnding(line).length)}`;
+  writeAtomically(path, lines.join(""));
+}
+
+function requireLeaf(graph: WpGraph, id: string): Wp {
+  const wp = graph.byId.get(id);
+  if (!wp) throw new UnknownWpError(`unknown work-package ID: ${id}`);
+  if (!graph.isLeaf(id)) {
+    throw new TransitionError(`${id} is a container; only leaves carry status`);
+  }
+  return wp;
+}
+
+function applyStatus(wp: Wp, status: string): Wp {
+  setStatus(wp.path, status);
+  return parseWp(wp.path);
+}
+
+/**
+ * The `blocked_by` targets of a WP and its ancestors that have not resolved to
+ * `done`. Unknown targets count as unmet; `wp check` reports them separately.
+ */
+function unmetDependencies(graph: WpGraph, id: string): string[] {
+  return [
+    ...new Set(
+      [id, ...graph.ancestors(id)]
+        .flatMap((ownerId) => graph.byId.get(ownerId)?.blockedBy ?? [])
+        .filter(
+          (dependency) =>
+            !graph.byId.has(dependency) || graph.resolvedStatus(dependency) !== "done",
+        ),
+    ),
+  ];
+}
+
+/**
+ * Start work on a leaf by writing `status: doing`. An unmet dependency is the
+ * only thing that stops it: the current status is irrelevant, so a `done` leaf
+ * reopens and any number of leaves may be `doing` at once. Re-starting the
+ * leaf that is already `doing` is a no-op.
+ */
+export function startWp(graph: WpGraph, id: string, force = false): Wp {
+  const wp = requireLeaf(graph, id);
+  if (wp.status === "doing") return wp;
+
+  if (!force) {
+    const blockers = unmetDependencies(graph, id);
+    if (blockers.length > 0) {
+      throw new TransitionError(`${id} is blocked by ${blockers.join(", ")}`);
+    }
+  }
+  return applyStatus(wp, "doing");
+}
+
+/** Release a claimed leaf by writing `status: done`. Finishing a done leaf is a no-op. */
+export function finishWp(graph: WpGraph, id: string, force = false): Wp {
+  const wp = requireLeaf(graph, id);
+  if (wp.status === "done") return wp;
+
+  if (!force && wp.status !== "doing") {
+    throw new TransitionError(
+      `${id} is ${wp.status ?? "missing a status"}, not doing; start it first`,
+    );
+  }
+  return applyStatus(wp, "done");
+}
+
 export function loadGraph(directory: string): WpGraph {
   const scanned = scanDirectory(directory);
   const parseDetails = scanned
@@ -641,6 +765,14 @@ function writeLine(value = ""): void {
   process.stdout.write(`${value}\n`);
 }
 
+function queueRow(wp: Wp): string {
+  return `${wp.id}\t${wp.status ?? ""}\t${wp.shortDescription}`;
+}
+
+function printTransition(wp: Wp, asJson: boolean): void {
+  writeLine(asJson ? jsonText(nextJson(wp)) : queueRow(wp));
+}
+
 function printNext(graph: WpGraph, allReady: boolean, asJson: boolean): void {
   const ready = graph.readyQueue();
   const selected = allReady ? ready : ready.slice(0, 1);
@@ -652,9 +784,7 @@ function printNext(graph: WpGraph, allReady: boolean, asJson: boolean): void {
     );
     return;
   }
-  for (const wp of selected) {
-    writeLine(`${wp.id}\t${wp.status ?? ""}\t${wp.shortDescription}`);
-  }
+  for (const wp of selected) writeLine(queueRow(wp));
 }
 
 function displayValue(value: JsonValue): string {
@@ -822,32 +952,41 @@ function printCheck(problems: readonly Problem[], asJson: boolean): void {
 }
 
 interface CliArguments {
-  readonly command: "next" | "show" | "tree" | "check";
+  readonly command: "next" | "show" | "tree" | "check" | "start" | "done";
   readonly directory: string;
   readonly asJson: boolean;
   readonly allReady: boolean;
+  readonly force: boolean;
   readonly id: string | null;
 }
 
-const HELP = `usage: wp [--dir PATH] [--json] {next,show,tree,check} ...
+const COMMANDS = ["next", "show", "tree", "check", "start", "done"] as const;
+const ID_COMMANDS = new Set(["show", "start", "done"]);
 
-Read-only markdown-native work-package tracker.
+const HELP = `usage: wp [--dir PATH] [--json] {next,show,tree,check,start,done} ...
+
+Markdown-native work-package tracker.
 
 commands:
   next              print ready work
   show ID           show one work package
   tree              show the work-package tree
   check             validate work packages
+  start ID          claim a ready leaf by setting status: doing
+  done ID           release a claimed leaf by setting status: done
 
 options:
   --dir PATH        work-package directory (default: ./wps)
   --json            emit machine-readable JSON
+  --all             with next, print the whole ready queue
+  --force           with start or done, skip the readiness and claim checks
   -h, --help        show this help message`;
 
 function parseArguments(argv: readonly string[]): CliArguments | null {
   let directory = "wps";
   let asJson = false;
   let allReady = false;
+  let force = false;
   let command: CliArguments["command"] | null = null;
   const commandArguments: string[] = [];
 
@@ -860,6 +999,11 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
     } else if (argument === "--all") {
       if (command !== "next") throw new UsageError("unrecognized argument: --all");
       allReady = true;
+    } else if (argument === "--force") {
+      if (command !== "start" && command !== "done") {
+        throw new UsageError("unrecognized argument: --force");
+      }
+      force = true;
     } else if (argument === "--dir") {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -872,7 +1016,7 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
     } else if (argument.startsWith("-")) {
       throw new UsageError(`unrecognized argument: ${argument}`);
     } else if (command === null) {
-      if (!["next", "show", "tree", "check"].includes(argument)) {
+      if (!(COMMANDS as readonly string[]).includes(argument)) {
         throw new UsageError(`unknown command: ${argument}`);
       }
       command = argument as CliArguments["command"];
@@ -883,9 +1027,9 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
 
   if (command === null) throw new UsageError("a command is required");
 
-  if (command === "show") {
+  if (ID_COMMANDS.has(command)) {
     if (commandArguments.length !== 1) {
-      throw new UsageError("show requires exactly one ID");
+      throw new UsageError(`${command} requires exactly one ID`);
     }
   } else if (commandArguments.length !== 0) {
     throw new UsageError(`${command} does not accept positional arguments`);
@@ -896,7 +1040,8 @@ function parseArguments(argv: readonly string[]): CliArguments | null {
     directory,
     asJson,
     allReady,
-    id: command === "show" ? (commandArguments[0] ?? null) : null,
+    force,
+    id: ID_COMMANDS.has(command) ? (commandArguments[0] ?? null) : null,
   };
 }
 
@@ -918,6 +1063,12 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     if (args.command === "next") printNext(graph, args.allReady, args.asJson);
     if (args.command === "show") printShow(graph, args.id as string, args.asJson);
     if (args.command === "tree") printTree(graph, args.asJson);
+    if (args.command === "start") {
+      printTransition(startWp(graph, args.id as string, args.force), args.asJson);
+    }
+    if (args.command === "done") {
+      printTransition(finishWp(graph, args.id as string, args.force), args.asJson);
+    }
     return 0;
   } catch (error) {
     if (error instanceof WpError) {
