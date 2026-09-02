@@ -12,6 +12,7 @@ This is a standalone repository. Everything it needs is inside it:
 | `src/` | The CLI itself — 11 flat modules, one technical concern each, zero runtime dependencies |
 | `orchestrate.ts` | The second entry point: the wave loop that drains a queue with parallel agents. Drives `wp.ts` as a subprocess; imports nothing from `src/` |
 | `prompts/worker.md` | The role half of every worker prompt. This copy is both this repo's own and the template other projects copy |
+| `install.sh` | The third entry point, and the only one that runs *outside* this repo: it points a target project at the two above. POSIX `sh`, no logic beyond create-if-absent and report |
 | `tests/` | The suite — one `*.test.ts` per concern plus the shared `helpers.ts` fixture. Given/When/Then, real files in temp dirs |
 | `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit codes |
 | `docs/vision.md` | Raw brainstorming plus the decision log D1–D11, with the rationale for every constraint below |
@@ -31,6 +32,7 @@ bun run typecheck                         # tsc --noEmit
 bun run wp --dir /path/to/project/wps check   # run the CLI (--dir is forwarded by bun)
 ./wp.ts check                             # or via shebang, against ./wps
 ./orchestrate.ts --dry-run                # what the next wave would do; spawns nothing
+./install.sh --dry-run                    # from a *target* project; refuses to run here
 ```
 
 Never run `./orchestrate.ts` without `--dry-run` to "check that it works": it spawns a
@@ -186,6 +188,42 @@ refuse to start.
 `orchestrate.ts` ends with `process.exitCode = await main()` and the same EPIPE guard
 as `wp.ts`, for the same two reasons.
 
+### The installer
+
+`install.sh` is the only file here that runs with the *target* project as its working
+directory. It is POSIX `sh` (`/bin/sh` is dash on the dev machine), like
+`scripts/check-boundaries.sh`, and it is not covered by the four module-boundary greps —
+those scope to `wp.ts src/`.
+
+It finds the clone through `$0` (`cd "$(dirname "$0")" && pwd -P`) and the target through
+`pwd -P`. That is the whole configuration: no flags for paths, no config file.
+
+Four behaviours are load-bearing, each pinned by a test in `tests/install.test.ts` and
+each confirmed by mutation:
+
+1. **Every step is create-if-absent, and reports which it did** (`+` changed, `=` already
+   there, `!` wants a human). This is what makes a second run after a `git pull` safe,
+   and it is why a `prompts/worker.md` the user edited is never overwritten.
+2. **`log/` is appended to `.gitignore` only when the rule is absent**, and a leading
+   `printf '\n'` is emitted first when the file does not already end in a newline —
+   otherwise `log/` is glued onto the last line and ignores nothing. The absence test
+   pipes through `tr -d '\r'` first: `core.autocrlf=true` is set on the dev machine and
+   `.gitattributes` pins only `*.ts`, `*.yml` and `*.sh` to LF, so a checked-out
+   `.gitignore` really does contain `log/\r` and a plain `grep -qxF 'log/'` misses it.
+   That bug was observed, not imagined — it appended a second `log/` to this repo's own
+   `.gitignore` during a mutation run.
+3. **Every refusal happens before the first write** — no `bun`, a clone missing
+   `wp.ts` / `orchestrate.ts` / `prompts/worker.md`, or the current directory *being*
+   the clone. That last one matters: without it, running the script here would create
+   this repo's own `wps/` and rewrite its `.gitignore`.
+4. **`--dry-run` skips the smoke test too**, not just the writes. `wp check` against a
+   `wps/` the dry run declined to create would report exit 2 and read as a real failure.
+
+Exit codes mirror the CLI's: `0` installed, `1` installed but `wp check` found problems
+in an existing `wps/`, `2` refused. The two steps it only *prints* — `/plugin install`
+and the `--verify` command — are deliberate: a slash command is not a shell command, and
+the gate is the project's choice per D10.
+
 ### The load-bearing invariants
 
 Changes that violate these contradict the design, not just the code:
@@ -292,12 +330,18 @@ it pins, not the module it happens to call through:
 | `tests/cli.test.ts` | argv grammar, printed rows, JSON shapes, exit codes |
 | `tests/cli-piped-output.test.ts` | The `process.exitCode` + EPIPE pair, on output past the pipe buffer |
 | `tests/orchestrate.test.ts` | The loop, not the CLI: wave and merge order against `FakeDriver`, the real-git `Driver` against a throwaway repo, and `orchestrate.ts` as a subprocess |
-| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 9 files, not 10. |
+| `tests/install.test.ts` | `install.sh` as a subprocess: what a fresh project gains, that a second run changes nothing, and every refusal |
+| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 10 files, not 11. |
 
-`tests/orchestrate.test.ts` is the one file outside that mirror, because
-`orchestrate.ts` is outside `src/`. It brings its own `FakeDriver` and
-`RepositoryFixture` rather than importing `tests/helpers.ts`: the fixture it needs is
-a git repository, not a `wps/` directory.
+`tests/orchestrate.test.ts` and `tests/install.test.ts` are the two files outside that
+mirror, because `orchestrate.ts` and `install.sh` are outside `src/`. Each brings its own
+fixture rather than importing `tests/helpers.ts`: one needs a git repository, the other a
+target project plus a throwaway `HOME`, not a `wps/` directory.
+
+`tests/install.test.ts` passes `env` to `Bun.spawnSync` on purpose, and always sets
+`HOME` and `WP_BIN_DIR` inside the temp directory. A test that inherited the real
+environment would write symlinks into the developer's own `~/.local/bin`, and the
+"`bun` is not on `PATH`" case is only reachable by replacing `PATH` outright.
 
 Every test file registers `afterEach(cleanupFixtures)` itself. Do **not** move that hook
 into `tests/helpers.ts`: Bun evaluates a helper module once per process, so a hook
