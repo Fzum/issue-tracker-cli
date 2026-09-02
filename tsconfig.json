@@ -11,5 +11,5 @@
     "target": "ES2022",
     "types": ["bun-types"]
   },
-  "include": ["wp.ts", "src/**/*.ts", "tests/**/*.ts"]
+  "include": ["wp.ts", "orchestrate.ts", "src/**/*.ts", "tests/**/*.ts"]
 }

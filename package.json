@@ -13,7 +13,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "boundaries": "sh scripts/check-boundaries.sh",
-    "wp": "bun run ./wp.ts"
+    "wp": "bun run ./wp.ts",
+    "orchestrate": "bun run ./orchestrate.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -149,7 +149,8 @@ Keep the worktree until the WP is genuinely done.
 
 ## 8. Implementing the orchestrator
 
-`orchestrate.ts` is not built yet. This section records the intended shape.
+`orchestrate.ts` is built. This section records the intended shape; §8.4 records
+where the built thing goes further than the sketch, and why.
 
 ### 8.1 The prompt is the WP
 
@@ -246,6 +247,49 @@ Three notes:
 The four rules of §6 are visible in the control flow: `start` before spawn,
 `Promise.all` for the wave, a `for` loop for integration, `done` only after the
 suite passes.
+
+### 8.4 What the built version adds
+
+The control flow is the sketch's. Six things the sketch left out turned out to be
+load-bearing, and the tests in `tests/orchestrate.test.ts` pin each one.
+
+1. **A red suite undoes its own merge** — `git reset --keep ORIG_HEAD`. §7 says
+   only "keep the branch and retry", which is enough when the red branch is the
+   last in the wave, as in §5's diagram. It is not enough otherwise: the merge
+   commit stays on `main`, so the *next* branch merges onto a red tree and gets
+   blamed for it, and rule 3 quietly stops being true. `--keep` rather than
+   `--hard` because the `wp start` edits to `wps/` are still uncommitted here, and
+   `--hard` would throw the queue's own bookkeeping away. If the undo fails, the
+   run stops rather than merging onto a broken `main`.
+2. **A conflicting merge is aborted** before moving on, so the next branch in the
+   wave meets a mergeable worktree instead of a half-merged one.
+   **An empty branch is refused** before that: an agent can exit 0 having
+   committed nothing, and merging its branch is "Already up to date" — no merge
+   commit, nothing to undo, and a `done` that claims work which never landed.
+3. **Claiming is serial and comes before any spawn.** It is also what makes the
+   loop terminate, so if a whole wave fails to claim, the loop stops rather than
+   asking `wp next` the same question for ever.
+4. **A driver seam.** `runQueue(driver)` holds the bookkeeping; a `Driver`
+   interface holds the commands. The wave order, the merge order and every failure
+   path are then testable with a fake, which matters for a loop whose entire value
+   is deterministic bookkeeping — the reason §8.2 rejected "no program at all".
+5. **A preflight and a `--dry-run`.** It refuses to start outside a git
+   repository, without `claude` on `PATH`, without a role prompt, or with a dirty
+   worktree — every wave merges into this worktree and runs the suite in it.
+   Unstaged edits under `wps/` and `log/` are the orchestrator's own; anything
+   *staged* is refused wherever it lives, because `git merge` will not run while
+   the index differs from `HEAD` even for a path the merge never touches, so
+   starting would mean paying for a wave and then failing every merge.
+   `--dry-run` prints the first wave's plan and stops.
+6. **The project owns two of the three inputs** (D10). `prompts/worker.md` is read
+   from the target repository, not from the tool, and the verify command is
+   `--verify` (default `bun test`) rather than hardcoded — which closes the gap
+   D10 left open. `bun install` survives, but only when the worktree has a
+   `package.json`.
+
+`Bun.spawn` with an argument list is used throughout instead of `$`. §8.2's reason
+for a program over shell was prompt quoting; an argument list settles it by having
+no shell to quote for.
 
 ## 9. Deliberately not built
 
