@@ -279,6 +279,10 @@ the prompts.
 Still open: `orchestrate.ts` is not built, and the verify command it runs is
 hardcoded rather than configured per project.
 
+*Closed 2026-09-02:* `orchestrate.ts` is built, the verify command is `--verify`,
+and the role prompt is read from the target repository. See §8.4 of the runbook
+for the six places the built loop goes past the sketch.
+
 Full runbook: `docs/execution-model.md`.
 
 ### D11 — Split `wp.ts` into `src/` modules (2026-09-02)

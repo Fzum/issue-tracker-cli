@@ -10,6 +10,8 @@ This is a standalone repository. Everything it needs is inside it:
 |---|---|
 | `wp.ts` | Executable entry point and the single public barrel (~45 lines). No logic beyond the process contract: the exit code and the stdout EPIPE guard. |
 | `src/` | The CLI itself — 11 flat modules, one technical concern each, zero runtime dependencies |
+| `orchestrate.ts` | The second entry point: the wave loop that drains a queue with parallel agents. Drives `wp.ts` as a subprocess; imports nothing from `src/` |
+| `prompts/worker.md` | The role half of every worker prompt. This copy is both this repo's own and the template other projects copy |
 | `tests/` | The suite — one `*.test.ts` per concern plus the shared `helpers.ts` fixture. Given/When/Then, real files in temp dirs |
 | `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit codes |
 | `docs/vision.md` | Raw brainstorming plus the decision log D1–D11, with the rationale for every constraint below |
@@ -28,7 +30,13 @@ bun test -t "given a self edge"           # single test by name substring
 bun run typecheck                         # tsc --noEmit
 bun run wp --dir /path/to/project/wps check   # run the CLI (--dir is forwarded by bun)
 ./wp.ts check                             # or via shebang, against ./wps
+./orchestrate.ts --dry-run                # what the next wave would do; spawns nothing
 ```
+
+Never run `./orchestrate.ts` without `--dry-run` to "check that it works": it spawns a
+real `claude` per ready leaf and merges into the current branch. To exercise the loop,
+put a fake `claude` on `PATH` in a throwaway repo — that is how the failure paths were
+verified.
 
 Requires Bun >= 1.0.29 (`Bun.stringWidth`, used by `wp tree`); `package.json` `engines`
 records it. `@types/bun` is pinned to `latest`, so `typecheck` passes against a newer
@@ -113,6 +121,65 @@ transition, then `setStatus` rewrites one line.
 if any file is unparseable or badly named, telling the caller to run `wp check`.
 `check` deliberately uses `scanDirectory` directly so it can report on broken files.
 
+### The orchestrator
+
+`orchestrate.ts` implements `docs/execution-model.md`. Read that document before
+changing it; every structural choice below is recorded there with a reason.
+
+It is a **second entry point, not part of the CLI**. The four `grep` boundaries above
+scope to `wp.ts src/` on purpose: `orchestrate.ts` legitimately touches `process.*`,
+`node:fs` and `Bun.spawn`, and no `src/` module may import it. It imports nothing from
+`src/` either — it drives `wp.ts` as a subprocess, so the JSON output shape is the
+contract between them, not a function signature.
+
+One seam carries the design: `runQueue(driver)` owns the bookkeeping, the `Driver`
+interface owns the commands. That is what makes the wave and merge order testable
+without git, an agent or a repository — `FakeDriver` in the test file records call
+order. Add a step by adding a `Driver` method, never by reaching for git inside
+`runQueue`.
+
+Load-bearing behaviour, all of it pinned by tests:
+
+1. **Claim serially before spawning anything.** A leaf that stays `todo` is offered
+   again next wave for ever, so claiming is what makes the loop terminate. If nothing
+   in a wave can be claimed, the loop stops instead of asking again.
+2. **The wave is `Promise.all`; integration is a `for` loop.** Never make integration
+   concurrent — serial merging is the whole source of attribution when the gate breaks.
+3. **A red gate undoes its own merge** (`git reset --keep ORIG_HEAD`, never `--hard`:
+   the `wp start` edits in `wps/` are still uncommitted). Without the undo, every later
+   branch in the wave inherits the red gate and gets blamed for it. The runbook only
+   says "keep the branch"; this is the part that keeps rule 3 true in a multi-branch
+   wave. If the undo itself fails, the run aborts rather than merging onto a broken main.
+4. **`wp done` only after a green gate**, and only after a merge that actually
+   merged something. An agent can exit 0 having committed nothing; that branch is an
+   ancestor of `HEAD`, so `git merge` is a silent no-op and `done` would be a lie.
+   `merge` checks with `git merge-base --is-ancestor` and refuses first.
+5. **A failing agent is not an error to propagate.** `runAgent` returns its outcome so
+   one dead agent cannot abandon the rest of the wave.
+
+Two git details are not cosmetic, and a mutation test proves each is pinned:
+
+- The clean-worktree preflight allows **unstaged** changes under `wps/` and `log/`, and
+  refuses anything **staged, wherever it is**. `git merge` will not run while the index
+  differs from `HEAD`, even for a path the merge never touches, so admitting a staged
+  file means paying for a whole wave of agents and then failing every merge. Read the
+  index column of `git status --porcelain`, not just the path (`?` is untracked, not
+  staged).
+- Cleanup is `git worktree remove --force`, and `git branch -d` runs whether or not the
+  removal worked. `bun install` rewrites the tracked `bun.lockb` in every fresh worktree,
+  so a plain `remove` fails for every WP — and a leftover worktree makes `prepare` refuse
+  that ID for ever, because it checks `existsSync` first.
+
+Per D10 the project owns two of the three inputs: `prompts/worker.md` is read from the
+*target repository* (`--role` overrides), and the gate is `--verify` (default
+`bun test`, run through `sh -c`). Only `bun install` remains, and only when the
+worktree has a `package.json`. Agent output goes to `log/<id>.log`, which is gitignored
+and — like `wps/` — exempt from the clean-worktree preflight, or a second run would
+refuse to start.
+
+`orchestrate.ts` ends with `process.exitCode = await main()` and the same EPIPE guard
+as `wp.ts`, for the same two reasons.
+
 ### The load-bearing invariants
 
 Changes that violate these contradict the design, not just the code:
@@ -120,7 +187,10 @@ Changes that violate these contradict the design, not just the code:
 1. **The filename stem is the ID.** `wp-m1e1u1.md` → `wp-m1e1u1`. There is no `id:`
    field. Grammar: `wp-` followed by `[a-z][0-9]+` segments (`STEM_PATTERN`).
 2. **Only three fields are stored:** `status` (leaves only), `blocked_by` (flat list of
-   stems), `short_description`. Unknown keys are preserved but ignored.
+   stems), `short_description`. An unknown key is preserved but ignored only when its
+   value is a single-line scalar; a list or map under any key but `blocked_by` raises
+   `FrontmatterParseError`, so one such file fails `wp check` and makes `next`, `show`
+   and `tree` refuse the whole directory.
 3. **Everything else is derived, never stored** — parent (stem minus last segment),
    children (stems extending by one segment), `blocks` (inverted `blocked_by`), type
    (stem depth), container status (rollup over children), `ready`. If you find yourself
@@ -197,8 +267,8 @@ assert on it directly. `src/render.ts` owns the `show` / `next` / `check` payloa
 - tsconfig runs `strict` plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`,
   so indexed reads need `?? fallback` and optional properties cannot take `undefined`.
   Match the existing `?? ""` / `?? []` idiom rather than adding non-null assertions.
-  `include` covers `wp.ts`, `src/**/*.ts` and `tests/**/*.ts` — a new module outside
-  those globs escapes `typecheck` entirely and gives a false green.
+  `include` covers `wp.ts`, `orchestrate.ts`, `src/**/*.ts` and `tests/**/*.ts` — a new
+  module outside those globs escapes `typecheck` entirely and gives a false green.
 
 ### The test layout
 
@@ -215,7 +285,13 @@ it pins, not the module it happens to call through:
 | `tests/tree.test.ts` | The glyph tree: connectors, rollup counts, blocker lists, column alignment, `tree --json` |
 | `tests/cli.test.ts` | argv grammar, printed rows, JSON shapes, exit codes |
 | `tests/cli-piped-output.test.ts` | The `process.exitCode` + EPIPE pair, on output past the pipe buffer |
-| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 8 files, not 9. |
+| `tests/orchestrate.test.ts` | The loop, not the CLI: wave and merge order against `FakeDriver`, the real-git `Driver` against a throwaway repo, and `orchestrate.ts` as a subprocess |
+| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 9 files, not 10. |
+
+`tests/orchestrate.test.ts` is the one file outside that mirror, because
+`orchestrate.ts` is outside `src/`. It brings its own `FakeDriver` and
+`RepositoryFixture` rather than importing `tests/helpers.ts`: the fixture it needs is
+a git repository, not a `wps/` directory.
 
 Every test file registers `afterEach(cleanupFixtures)` itself. Do **not** move that hook
 into `tests/helpers.ts`: Bun evaluates a helper module once per process, so a hook

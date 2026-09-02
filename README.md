@@ -1,11 +1,20 @@
 # Agentic Issue Tracker CLI
 
-A work-queue CLI over markdown files. The filesystem *is* the tracker — no
-database, no server. TypeScript for Bun 1.0.29+, zero runtime dependencies.
-`wp.ts` is the entry point; the implementation lives in `src/`.
+A work-queue CLI over markdown files, plus the loop that runs it. The filesystem
+*is* the tracker — no database, no server. TypeScript for Bun 1.0.29+, zero
+runtime dependencies.
 
 The question it answers is: **what should an agent work on next?** `wp next`
 answers it; `wp start` / `wp done` let the agent record the answer.
+
+| Entry point | What it is |
+|---|---|
+| `wp.ts` | The tracker. Ask what is ready, claim it, finish it. Implementation in `src/`. |
+| `orchestrate.ts` | The loop. Hands every ready work package to its own agent in its own git worktree, then merges the branches back one at a time. |
+
+Both are tools, like `git` or `jq`: installed once, then pointed at a project.
+They hold no work of their own. A project brings three things — its own `wps/`,
+a `prompts/worker.md`, and a command that verifies its build.
 
 ## Install
 
@@ -13,18 +22,21 @@ answers it; `wp start` / `wp done` let the agent record the answer.
 bun install
 ```
 
-There is no build step. `wp.ts` is executable and runs straight from disk.
+There is no build step. `wp.ts` and `orchestrate.ts` are executable and run
+straight from disk.
 
 ```sh
 # From a project that has a wps/ directory:
 /path/to/issue-tracker-cli/wp.ts next
+/path/to/issue-tracker-cli/orchestrate.ts --dry-run
 
 # Or from this directory, pointing at the work packages:
 bun run wp --dir /path/to/project/wps next
 ```
 
 `bun run wp` only resolves from this directory. From anywhere else, call
-`wp.ts` by absolute path.
+`wp.ts` by absolute path. `orchestrate.ts` always runs in the project whose
+queue it drains, because that is the git repository it merges into.
 
 ## Quick start
 
@@ -313,6 +325,134 @@ an already-`doing` leaf and finishing an already-`done` leaf are both no-ops.
 | `1` | Only from `wp check`, when it found problems |
 | `2` | Usage error, unknown ID, or unreadable directory |
 
+## Running the queue with agents
+
+`wp next --all` answers "what can be picked up right now". `orchestrate.ts` acts
+on that answer: one agent per ready work package, each in its own git worktree,
+then the branches are merged back one at a time.
+
+```sh
+cd /path/to/project                          # the repo with wps/ in it
+/path/to/issue-tracker-cli/orchestrate.ts --dry-run   # print wave 1 and stop
+/path/to/issue-tracker-cli/orchestrate.ts             # drain the queue
+```
+
+Nothing is planned ahead. Readiness is recomputed by `wp next` every round, so a
+dependency enforces itself by simply not appearing in the queue. That is why no
+wave graph is needed and no scheduler exists.
+
+```
+MAIN WORKTREE — the orchestrator lives here, on main, and owns wps/
+     │
+     │   wave = wp next --all  →  [u1, u2, u3],  then wp start on each
+     │
+ ┌───┴─────────────┬─────────────────┐          git worktree add, one per agent
+ wt-u1           wt-u2            wt-u3
+ wp/u1           wp/u2            wp/u3
+ agent           agent            agent         edits, runs the gate, commits
+ └───┬─────────────┴─────────────────┘
+     │   agents report back, then stop
+     ▼
+ back in main, one branch at a time, never in parallel:
+     git merge --no-ff wp/u1 && <verify>  → green → wp done u1
+     git merge --no-ff wp/u2 && <verify>  → RED   → merge undone, branch kept
+```
+
+### One wave, step by step
+
+1. `wp next --all --json` → the ready leaves. Empty means the queue is drained.
+2. `wp start <id>` for each of them, in the main worktree. Claiming is what makes
+   the loop terminate: a `doing` leaf is never offered again.
+3. `git worktree add ../wt-<id> -b wp/<id>` per agent, plus `bun install` when the
+   project has a `package.json`.
+4. `claude -p "<role + wp show <id>>"` inside that worktree — all of them at once.
+5. Then, serially per branch: `git merge --no-ff` → the verify command →
+   `wp done <id>` → drop the worktree and the branch.
+
+### The four rules
+
+1. **The orchestrator owns `main` and `wps/`.** Agents never touch the tracker,
+   so status changes cannot conflict — otherwise the most frequent conflict of
+   all, since every wave writes them.
+2. **One agent = one worktree = one branch = one work package.** A private tree
+   is what lets an agent run the suite and believe the result.
+3. **Merge serially, never in parallel.** This is what buys back attribution: if
+   the gate goes red, it is the branch just merged, because nothing else changed.
+4. **`done` means merged and green** — not "the agent reported success". So
+   `wp tree` shows integrated reality rather than optimism.
+
+### The prompt is the ticket
+
+No prompt is written per work package. Each agent gets two halves glued together:
+
+```
+prompts/worker.md   the role, hand-written once per project:
+        +           how to work here, run the gate, commit, never touch wps/
+wp show wp-m1e2u3   the task, written by whoever wrote the ticket
+        =
+the prompt for one agent
+```
+
+`--role PATH` points at a different role prompt. This repository ships one you
+can copy as a template.
+
+### When something breaks
+
+| What happened | What the orchestrator does |
+|---|---|
+| Merge conflict | `git merge --abort`, keep the branch, carry on with the next one. Those two work packages overlapped in the code; add a `blocked_by` between them and they land in different waves next time. |
+| Gate red after a merge | Undo the merge (`git reset --keep ORIG_HEAD`), keep the branch, never call `wp done`. Without the undo, every later branch in the wave would inherit the red gate and get blamed for it. |
+| Agent dies | The work package stays `doing` and its branch survives. Nothing is lost. |
+| Agent committed nothing | The branch is refused before the merge. Merging it would be a no-op, so `wp done` would claim work that never landed. |
+
+A work package left at `doing` **will not come back in the queue** — `wp next`
+offers only `todo` leaves. Reopening it means editing the `status:` line by hand.
+Keep its worktree until it is genuinely done.
+
+Agent output goes to `log/<id>.log`, one file per work package.
+
+### Options and exit codes
+
+| Option | Meaning |
+|---|---|
+| `--dir PATH` | Work-package directory. Default `./wps`. |
+| `--role PATH` | Worker role prompt. Default `./prompts/worker.md`. |
+| `--verify COMMAND` | The gate a merge must pass, run through `sh -c`, so `&&` works. Default `bun test`. For this repository: `--verify "bun test && bun run typecheck"`. |
+| `--dry-run` | Print the first wave's plan and stop. Claims nothing, spawns nothing, merges nothing. |
+
+| Code | Meaning |
+|---|---|
+| `0` | The queue drained and everything merged green |
+| `1` | The queue drained, but something is left for a human |
+| `2` | Usage error, or the repository was not ready |
+
+"Not ready" means: not a git repository, `claude` not on `PATH`, no role prompt,
+or the worktree is not clean — every wave merges into this worktree and runs the
+gate here. Unstaged edits under `wps/` and `log/` are fine, because they are the
+orchestrator's own bookkeeping. **Anything staged is refused, wherever it is**:
+`git merge` will not run while the index differs from `HEAD`, even for a file the
+merge never touches, so starting would mean paying for a wave of agents and then
+failing every merge.
+
+### Deliberate limits
+
+- A wave spawns **everything** the queue offers. There is no cap and no worker
+  pool: tracking in-flight work costs more than the idle time at the end of a
+  wave.
+- Nothing times out an agent that hangs.
+- `doing` is not a lock. One orchestrator handing out distinct IDs cannot hand
+  the same ID out twice, so two orchestrators at once is the unsupported case.
+- Agents are spawned with `--permission-mode acceptEdits`, which covers file
+  edits only. Running the gate and committing are `Bash`, so `Bash` must be
+  allowed in your Claude Code settings — otherwise an agent edits, never commits,
+  and its empty branch is refused at merge time.
+- Cleanup is `git worktree remove --force`. By then the work is merged and green,
+  so anything left in the worktree is junk; without `--force`, one stray file
+  would keep the worktree and block that ID from ever running again.
+
+[`docs/execution-model.md`](docs/execution-model.md) is the full runbook, with
+the reasoning and the list of what is deliberately not built.
+
 ## The file format
 
 One markdown file per work package, in the work-package directory:
@@ -367,13 +507,17 @@ bun run typecheck                   # tsc --noEmit
 
 `bun test` plus `bun run typecheck` are the whole verification gate. There is
 no build step and no linter. Tests are Given/When/Then in both name and body,
-and write real files to temp dirs.
+and write real files to temp dirs. `tests/` holds one file per concern for the
+tracker, plus `tests/orchestrate.test.ts` for the loop — the wave and merge order
+against a fake driver, and the command line against a throwaway git repository.
 
 ## Docs
 
 - [`docs/design.md`](docs/design.md) — approved design: field reference,
   derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit
   codes.
+- [`docs/execution-model.md`](docs/execution-model.md) — the runbook the loop
+  implements: the wave, worktree isolation, serial merge, failure handling.
 - [`docs/vision.md`](docs/vision.md) — brainstorming plus the decision log
   D1–D11. Read it before questioning a constraint; most surprising choices are
   deliberate.
