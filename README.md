@@ -49,12 +49,17 @@ $ wp tree
 ▶  ├─ Read path             1/2  wp-m1e1
 ✔  │  ├─ Parse frontmatter       wp-m1e1u1
 ○  │  └─ Build the graph         wp-m1e1u2
-○  └─ Write path                 wp-m1e2
+⊘  └─ Write path                 wp-m1e2    ← wp-m1e1
 ```
 
 `wp check` printing nothing means the directory is valid. Glyphs are `✔` done,
 `▶` doing, `○` todo, `?` invalid. The `1/2` column is *direct children done /
 total*, rolled up per container.
+
+`⊘` means "cannot start yet", and `←` names what it waits for. `Write path`
+waits for the whole `Read path` epic. `Build the graph` waits for
+`Parse frontmatter`, which is already `done`, so it shows a plain `○` — only
+unfinished dependencies are listed.
 
 Ask what to work on, claim it, finish it:
 
@@ -80,8 +85,8 @@ $ wp tree
 ○  └─ Write path                 wp-m1e2
 ```
 
-`wp-m1e2` was blocked by `wp-m1e1`; now that the epic rolls up to `done`, it is
-ready and `wp next` returns it:
+`wp-m1e2` was blocked by `wp-m1e1`; now that the epic rolls up to `done`, its
+`⊘` is gone, it is ready, and `wp next` returns it:
 
 ```console
 $ wp next
@@ -100,7 +105,7 @@ usage: wp [--dir PATH] [--json] {next,show,tree,check,start,done} ...
 |---|---|---|
 | `wp next` | Print the first ready leaf as `id<TAB>status<TAB>description`. Prints nothing when the queue is empty. | `--all` prints the whole ready queue |
 | `wp show ID` | Print every stored and derived field of one work package, then its body. | — |
-| `wp tree` | Print the whole tree with status glyphs and `done/total` rollup counts per container. | — |
+| `wp tree` | Print the whole tree with status glyphs, `done/total` rollup counts per container, and `⊘ … ←` for anything that cannot start yet. | — |
 | `wp check` | Validate the directory and print one line per problem. | — |
 | `wp start ID` | Claim a leaf by writing `status: doing`. | `--force` starts even when blocked |
 | `wp done ID` | Release a claimed leaf by writing `status: done`. | `--force` skips the "must be doing" check |
@@ -196,9 +201,10 @@ glyphs, so consumers do not have to parse box drawing:
 
 ```console
 $ wp tree
-▶  Ship the CLI          1/2  wp-m1
+▶  Ship the CLI          1/3  wp-m1
 ✔  ├─ Parse frontmatter       wp-m1e1
-○  └─ Build the graph         wp-m1e2
+⊘  ├─ Build the graph         wp-m1e2  ← wp-m1e3
+○  └─ Print the tree          wp-m1e3
 
 $ wp tree --json
 [
@@ -206,25 +212,41 @@ $ wp tree --json
     "depth": 1,
     "id": "wp-m1",
     "short_description": "Ship the CLI",
-    "status": "doing"
+    "status": "doing",
+    "unmet_blockers": []
   },
   {
     "depth": 2,
     "id": "wp-m1e1",
     "short_description": "Parse frontmatter",
-    "status": "done"
+    "status": "done",
+    "unmet_blockers": []
   },
   {
     "depth": 2,
     "id": "wp-m1e2",
     "short_description": "Build the graph",
-    "status": "todo"
+    "status": "todo",
+    "unmet_blockers": [
+      "wp-m1e3"
+    ]
+  },
+  {
+    "depth": 2,
+    "id": "wp-m1e3",
+    "short_description": "Print the tree",
+    "status": "todo",
+    "unmet_blockers": []
   }
 ]
 ```
 
 Container `status` in this output is the derived rollup, not a stored field.
-Here `wp-m1` reports `doing` because one child is `done` and one is `todo`.
+Here `wp-m1` reports `doing` because one child is `done` and two are `todo`.
+
+`unmet_blockers` is the same list the `⊘` line shows: the WP's own `blocked_by`
+plus every ancestor's, minus whatever is already `done`. It is what `wp start`
+refuses on, so an empty list means "startable".
 
 ### `wp check`
 
@@ -353,6 +375,6 @@ and write real files to temp dirs.
   derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit
   codes.
 - [`docs/vision.md`](docs/vision.md) — brainstorming plus the decision log
-  D1–D9. Read it before questioning a constraint; most surprising choices are
+  D1–D10. Read it before questioning a constraint; most surprising choices are
   deliberate.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for agents working on this repo.

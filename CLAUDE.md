@@ -62,7 +62,7 @@ The CLI is a pipeline. One concern per file, each testable alone; the data path 
 | `src/check.ts` | The `wp check` rules. Pure — takes a scan, not a directory. |
 | `src/transitions.ts` | The `start` / `done` guard policy and what `--force` overrides |
 | `src/render.ts` | Plain-text and JSON output for every command except `tree`. Returns strings. |
-| `src/tree.ts` | The glyph tree: connectors, rollup counts, column alignment, `tree --json` |
+| `src/tree.ts` | The glyph tree: connectors, rollup counts, blocker lists, column alignment, `tree --json` |
 | `src/cli.ts` | **The only module that touches `process.*`.** argv grammar, help, dispatch, exit codes. |
 
 Dependency direction is strictly one-way; an import may only point at a lower level:
@@ -149,7 +149,7 @@ Which module owns each invariant — change **every** listed owner together:
 | 2 | `src/model.ts` (`Wp`'s getters), `src/frontmatter.ts` (unknown keys preserved), `src/store.ts` (`blocked_by ??= []`) |
 | 3 | `src/graph.ts` and `src/ids.ts` (`parentId` *is* the parent derivation); `src/render.ts` / `src/tree.ts` re-derive type and depth for the wire |
 | 4 | `src/graph.ts`, enforced by `src/check.ts` and `src/transitions.ts` |
-| 5 | **Two implementations with inverted polarity:** `src/graph.ts` (`isReady`, yes/no) and `src/transitions.ts` (`unmetDependencies`, names the blockers). Change both. |
+| 5 | **Two implementations with inverted polarity, both in `src/graph.ts`:** `isReady` (yes/no) and `unmetDependencies` (names the blockers). Change both. Two readers depend on that equivalence: `src/transitions.ts` lists the blockers in the `wp start` refusal, `src/tree.ts` prints them after `⊘`. |
 | 6 | `src/store.ts` (`setStatus`, the writer) and `src/transitions.ts` (the guards) |
 | 7 | `src/frontmatter.ts` |
 

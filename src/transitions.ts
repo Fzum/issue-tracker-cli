@@ -23,26 +23,6 @@ function applyStatus(wp: Wp, status: string): Wp {
 }
 
 /**
- * The `blocked_by` targets of a WP and its ancestors that have not resolved to
- * `done`. Unknown targets count as unmet; `wp check` reports them separately.
- *
- * Invariant 5 again, with inverted polarity: `WpGraph.isReady` answers yes/no, this
- * names the blockers so the error message can list them. Change both together.
- */
-function unmetDependencies(graph: WpGraph, id: string): string[] {
-  return [
-    ...new Set(
-      [id, ...graph.ancestors(id)]
-        .flatMap((ownerId) => graph.byId.get(ownerId)?.blockedBy ?? [])
-        .filter(
-          (dependency) =>
-            !graph.byId.has(dependency) || graph.resolvedStatus(dependency) !== "done",
-        ),
-    ),
-  ];
-}
-
-/**
  * Start work on a leaf by writing `status: doing`. An unmet dependency is the
  * only thing that stops it: the current status is irrelevant, so a `done` leaf
  * reopens and any number of leaves may be `doing` at once. Re-starting the
@@ -53,7 +33,7 @@ export function startWp(graph: WpGraph, id: string, force = false): Wp {
   if (wp.status === "doing") return wp;
 
   if (!force) {
-    const blockers = unmetDependencies(graph, id);
+    const blockers = graph.unmetDependencies(id);
     if (blockers.length > 0) {
       throw new TransitionError(`${id} is blocked by ${blockers.join(", ")}`);
     }

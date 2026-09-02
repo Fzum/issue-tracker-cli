@@ -111,9 +111,8 @@ export class WpGraph {
   }
 
   /**
-   * Invariant 5: readiness includes ancestors. src/transitions.ts implements the same
-   * rule with inverted polarity in `unmetDependencies`, so it can name the blockers —
-   * change both together.
+   * Invariant 5: readiness includes ancestors. `unmetDependencies` below is the same
+   * rule with inverted polarity, so it can name the blockers — change both together.
    */
   isReady(id: string): boolean {
     const wp = this.requireWp(id);
@@ -127,6 +126,32 @@ export class WpGraph {
       (dependency) =>
         this.byId.has(dependency) && this.resolvedStatus(dependency) === "done",
     );
+  }
+
+  /**
+   * The `blocked_by` targets of a WP and its ancestors that have not resolved to
+   * `done`. Unknown targets count as unmet; `wp check` reports them separately.
+   *
+   * Invariant 5 with inverted polarity: `isReady` answers yes/no, this names the
+   * blockers. Both readers depend on that equivalence — src/transitions.ts lists
+   * them in the `wp start` refusal, src/tree.ts prints them after `⊘` — so the tree
+   * can never call a WP startable when `wp start` would refuse it.
+   *
+   * Owner order, de-duplicated: the WP's own targets first, then each ancestor's.
+   * `wp start` reports them in that order; `src/tree.ts` sorts by `compareWpIds`
+   * first, because its column is read by eye.
+   */
+  unmetDependencies(id: string): string[] {
+    return [
+      ...new Set(
+        [id, ...this.ancestors(id)]
+          .flatMap((ownerId) => this.byId.get(ownerId)?.blockedBy ?? [])
+          .filter(
+            (dependency) =>
+              !this.byId.has(dependency) || this.resolvedStatus(dependency) !== "done",
+          ),
+      ),
+    ];
   }
 
   readyQueue(): Wp[] {

@@ -267,6 +267,14 @@ classes, no one-file-per-command, no `utils.ts`, no nested directories under
 `src/`, and no renaming of any public symbol. `src/` is flat so every intra-module
 import is `./x.ts`; promoting to directories later is a plain `git mv`.
 
+One helper changed owner rather than merely changing file. `unmetDependencies` was
+a private function in the monolith, called both by `wp start`'s guard and by
+`wp tree`'s blocker list. Those two callers now sit in different modules, and
+`src/tree.ts` may not import the write path, so the helper became a `WpGraph`
+method beside `isReady` — the derivation layer that already owns invariant 5's
+other polarity. The barrel's export list is untouched — the helper was never
+exported, and `WpGraph` already was.
+
 One real bug surfaced while doing it, and its fix is the one intentional behaviour
 change here: `wp.ts` ended with `process.exit(main())`, which discards everything
 past 128 KiB when stdout is a pipe. `wp tree --json`, `wp check --json` and

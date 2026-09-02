@@ -828,6 +828,259 @@ describe("CLI", () => {
     }
   });
 
+  test("given a leaf with an unmet blocker when tree runs then a blocked glyph and the blocker are printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Auth" });
+    fixture.givenWp("wp-m1e1", { status: "done", description: "Step one" });
+    fixture.givenWp("wp-m1e2", {
+      status: "todo",
+      description: "Step two",
+      blockedBy: ["wp-m1e3"],
+    });
+    fixture.givenWp("wp-m1e3", { status: "todo", description: "Step six" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "▶  Auth         1/3  wp-m1",
+        "✔  ├─ Step one       wp-m1e1",
+        "⊘  ├─ Step two       wp-m1e2  ← wp-m1e3",
+        "○  └─ Step six       wp-m1e3",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("given a blocked container when tree runs then its descendants repeat the inherited blocker", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Auth" });
+    fixture.givenWp("wp-m1e1", {
+      status: null,
+      description: "Login flow",
+      blockedBy: ["wp-m2e1"],
+    });
+    fixture.givenWp("wp-m1e1u1", {
+      status: "todo",
+      description: "Endpoint",
+      blockedBy: ["wp-m1e1u2"],
+    });
+    fixture.givenWp("wp-m1e1u2", { status: "todo", description: "Cookies" });
+    fixture.givenWp("wp-m2", { status: null, description: "Platform" });
+    fixture.givenWp("wp-m2e1", { status: "todo", description: "Config" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "○  Auth            0/1  wp-m1",
+        "⊘  └─ Login flow   0/2  wp-m1e1    ← wp-m2e1",
+        "⊘     ├─ Endpoint       wp-m1e1u1  ← wp-m1e1u2, wp-m2e1",
+        "⊘     └─ Cookies        wp-m1e1u2  ← wp-m2e1",
+        "",
+        "○  Platform        0/1  wp-m2",
+        "○  └─ Config            wp-m2e1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("given a blocker that is already done when tree runs then no blocker column is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Auth" });
+    fixture.givenWp("wp-m1e1", { status: "done", description: "Step one" });
+    fixture.givenWp("wp-m1e2", {
+      status: "todo",
+      description: "Step two",
+      blockedBy: ["wp-m1e1"],
+    });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "▶  Auth         1/2  wp-m1",
+        "✔  ├─ Step one       wp-m1e1",
+        "○  └─ Step two       wp-m1e2",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("given a blocker that does not exist when tree runs then it is still listed as unmet", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: "todo",
+      description: "Lonely",
+      blockedBy: ["wp-m9"],
+    });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("⊘  Lonely  wp-m1  ← wp-m9\n");
+  });
+
+  test("given a blocked leaf that is already doing when tree runs then the doing glyph is kept", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Auth" });
+    fixture.givenWp("wp-m1e1", {
+      status: "doing",
+      description: "Step one",
+      blockedBy: ["wp-m1e2"],
+    });
+    fixture.givenWp("wp-m1e2", { status: "todo", description: "Step two" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "▶  Auth         0/2  wp-m1",
+        "▶  ├─ Step one       wp-m1e1  ← wp-m1e2",
+        "○  └─ Step two       wp-m1e2",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("given a tree with blockers when tree runs then no line has trailing whitespace", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone with a long name" });
+    fixture.givenWp("wp-m1e1", {
+      status: "todo",
+      description: "Short",
+      blockedBy: ["wp-m1e2"],
+    });
+    fixture.givenWp("wp-m1e2", { status: "todo", description: "Other" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    for (const line of result.stdout.split("\n")) {
+      expect(line).toBe(line.trimEnd());
+    }
+  });
+
+  test("given a tree with blockers when tree JSON runs then each row lists its unmet blockers", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Auth" });
+    fixture.givenWp("wp-m1e1", {
+      status: "todo",
+      description: "Step one",
+      blockedBy: ["wp-m1e2"],
+    });
+    fixture.givenWp("wp-m1e2", { status: "todo", description: "Step two" });
+
+    // When
+    const result = fixture.runCli("tree", "--json", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      { depth: 1, id: "wp-m1", short_description: "Auth", status: "todo", unmet_blockers: [] },
+      {
+        depth: 2,
+        id: "wp-m1e1",
+        short_description: "Step one",
+        status: "todo",
+        unmet_blockers: ["wp-m1e2"],
+      },
+      {
+        depth: 2,
+        id: "wp-m1e2",
+        short_description: "Step two",
+        status: "todo",
+        unmet_blockers: [],
+      },
+    ]);
+  });
+
+  test("given an own and an inherited blocker when tree JSON runs then the list is in compareWpIds order", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: null,
+      description: "Auth",
+      blockedBy: ["wp-m2e2"],
+    });
+    fixture.givenWp("wp-m1e1", {
+      status: "todo",
+      description: "Endpoint",
+      blockedBy: ["wp-m2e10"],
+    });
+    fixture.givenWp("wp-m2", { status: null, description: "Platform" });
+    fixture.givenWp("wp-m2e2", { status: "todo", description: "Config" });
+    fixture.givenWp("wp-m2e10", { status: "todo", description: "Later" });
+
+    // When
+    const result = fixture.runCli("tree", "--json", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        depth: 1,
+        id: "wp-m1",
+        short_description: "Auth",
+        status: "todo",
+        unmet_blockers: ["wp-m2e2"],
+      },
+      {
+        // The own blocker is collected before the inherited one, so insertion order
+        // would read `wp-m2e10, wp-m2e2`; `compareWpIds` puts `e2` before `e10`.
+        depth: 2,
+        id: "wp-m1e1",
+        short_description: "Endpoint",
+        status: "todo",
+        unmet_blockers: ["wp-m2e2", "wp-m2e10"],
+      },
+      {
+        depth: 1,
+        id: "wp-m2",
+        short_description: "Platform",
+        status: "todo",
+        unmet_blockers: [],
+      },
+      {
+        depth: 2,
+        id: "wp-m2e2",
+        short_description: "Config",
+        status: "todo",
+        unmet_blockers: [],
+      },
+      {
+        depth: 2,
+        id: "wp-m2e10",
+        short_description: "Later",
+        status: "todo",
+        unmet_blockers: [],
+      },
+    ]);
+  });
+
   test("given an invalid folder when check runs then problems and exit one are returned", () => {
     // Given
     const fixture = new Fixture();
