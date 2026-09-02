@@ -11,7 +11,7 @@ This is a standalone repository. Everything it needs is inside it:
 | `wp.ts` | The entire CLI (~980 lines, zero runtime dependencies) |
 | `tests/wp.test.ts` | The whole suite — Given/When/Then, real files in temp dirs |
 | `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit codes |
-| `docs/vision.md` | Raw brainstorming plus the decision log D1–D9, with the rationale for every constraint below |
+| `docs/vision.md` | Raw brainstorming plus the decision log D1–D10, with the rationale for every constraint below |
 | `docs/execution-model.md` | How an orchestrator runs the queue with parallel agents: the wave loop, worktree isolation, serial merge |
 
 Read `docs/design.md` before changing CLI behaviour, and `docs/vision.md` before
