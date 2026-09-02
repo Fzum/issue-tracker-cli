@@ -33,6 +33,13 @@ const STATUS_COLOURS = new Map([
 const INVALID_GLYPH = "?";
 const INVALID_COLOUR = "\u001B[31m";
 const COLOUR_RESET = "\u001B[0m";
+/**
+ * Shown instead of the status glyph when a WP cannot start yet, always paired
+ * with a `BLOCKER_ARROW` list naming the unmet dependencies.
+ */
+const BLOCKED_GLYPH = "⊘";
+const BLOCKED_COLOUR = "\u001B[35m";
+const BLOCKER_ARROW = "←";
 
 type FieldValue = string | string[];
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
@@ -837,8 +844,18 @@ function treeRows(graph: WpGraph): JsonObject[] {
       status: graph.resolvedStatus(id),
       short_description: wp.shortDescription,
       depth: stemSegments(id).length,
+      unmet_blockers: blockersOf(graph, id),
     };
   });
+}
+
+/**
+ * The unmet `blocked_by` targets that stop this WP, its own and every ancestor's,
+ * in tree order. Same source as the `wp start` guard, so the tree can never claim
+ * a WP is startable when `wp start` would refuse it.
+ */
+function blockersOf(graph: WpGraph, id: string): string[] {
+  return unmetDependencies(graph, id).sort(compareWpIds);
 }
 
 interface TreeLine {
@@ -846,6 +863,7 @@ interface TreeLine {
   readonly status: string | null;
   readonly label: string;
   readonly count: string;
+  readonly blockers: readonly string[];
   readonly isRoot: boolean;
 }
 
@@ -882,6 +900,7 @@ function treeLines(graph: WpGraph): TreeLine[] {
       status: graph.resolvedStatus(id),
       label: `${spine}${branch}${wp.shortDescription}`,
       count: children.length === 0 ? "" : `${done}/${children.length}`,
+      blockers: blockersOf(graph, id),
       isRoot: chain.length === 0,
     };
   });
@@ -891,11 +910,20 @@ function useColour(): boolean {
   return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 }
 
-function statusGlyph(status: string | null, colour: boolean): string {
-  const glyph = (status === null ? undefined : STATUS_GLYPHS.get(status)) ?? INVALID_GLYPH;
+/**
+ * `blocked` replaces the glyph for a WP that cannot start yet. `done` and `doing`
+ * keep their own glyph: work already under way is reported as it stands, and only
+ * a WP that has not started reads as unstartable.
+ */
+function statusGlyph(status: string | null, colour: boolean, blocked = false): string {
+  const showBlocked = blocked && status !== "done" && status !== "doing";
+  const glyph = showBlocked
+    ? BLOCKED_GLYPH
+    : (status === null ? undefined : STATUS_GLYPHS.get(status)) ?? INVALID_GLYPH;
   if (!colour) return glyph;
-  const code =
-    (status === null ? undefined : STATUS_COLOURS.get(status)) ?? INVALID_COLOUR;
+  const code = showBlocked
+    ? BLOCKED_COLOUR
+    : (status === null ? undefined : STATUS_COLOURS.get(status)) ?? INVALID_COLOUR;
   return `${code}${glyph}${COLOUR_RESET}`;
 }
 
@@ -930,13 +958,21 @@ function printTree(graph: WpGraph, asJson: boolean): void {
     (width, line) => Math.max(width, displayWidth(line.count)),
     0,
   );
+  // The ID is the last column until something is blocked, so it is only padded
+  // when a blocker list follows it. A tree with nothing blocked prints as before.
+  const idWidth = lines.some((line) => line.blockers.length > 0)
+    ? lines.reduce((width, line) => Math.max(width, displayWidth(line.id)), 0)
+    : 0;
   const colour = useColour();
 
   lines.forEach((line, index) => {
     if (line.isRoot && index > 0) writeLine();
     const counts = countWidth === 0 ? "" : `  ${padDisplayStart(line.count, countWidth)}`;
+    const blockers =
+      line.blockers.length === 0 ? "" : `  ${BLOCKER_ARROW} ${line.blockers.join(", ")}`;
+    const glyph = statusGlyph(line.status, colour, line.blockers.length > 0);
     writeLine(
-      `${statusGlyph(line.status, colour)}  ${padDisplayEnd(line.label, labelWidth)}${counts}  ${line.id}`.trimEnd(),
+      `${glyph}  ${padDisplayEnd(line.label, labelWidth)}${counts}  ${padDisplayEnd(line.id, idWidth)}${blockers}`.trimEnd(),
     );
   });
 }
