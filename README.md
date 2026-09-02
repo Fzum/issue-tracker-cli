@@ -1,8 +1,8 @@
 # Agentic Issue Tracker CLI
 
 A work-queue CLI over markdown files. The filesystem *is* the tracker — no
-database, no server. One TypeScript module for Bun 1.0.29+, zero runtime
-dependencies.
+database, no server. TypeScript for Bun 1.0.29+, zero runtime dependencies.
+`wp.ts` is the entry point; the implementation lives in `src/`.
 
 The question it answers is: **what should an agent work on next?** `wp next`
 answers it; `wp start` / `wp done` let the agent record the answer.

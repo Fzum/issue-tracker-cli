@@ -29,7 +29,19 @@ issue-tracker-cli/
   README.md
   package.json
   tsconfig.json
-  wp.ts
+  wp.ts            # entry point + public barrel only
+  src/             # one technical concern per file
+    ids.ts
+    model.ts
+    frontmatter.ts
+    graph.ts
+    json.ts
+    store.ts
+    check.ts
+    transitions.ts
+    render.ts
+    tree.ts
+    cli.ts
   tests/
     wp.test.ts
 wps/
@@ -149,8 +161,8 @@ in that order; ties cannot occur because stems are unique.
 
 ## 6. CLI
 
-`issue-tracker-cli/wp.ts` — single-file TypeScript CLI for Bun 1.0+, with no
-runtime dependencies. From `issue-tracker-cli/`, run as `bun run wp <cmd>`,
+`wp.ts` — the executable entry point of a TypeScript CLI for Bun 1.0+, with no
+runtime dependencies; the implementation lives in `src/` (§8). Run as `bun run wp <cmd>`,
 `bun wp.ts <cmd>`, or `./wp.ts <cmd>` via shebang. Every command except
 `wp start` / `wp done` is read-only; those two rewrite exactly one line (§6.1).
 Agents may still flip `status` with an ordinary file edit.
@@ -280,13 +292,25 @@ Rule 11 keeps the derived hierarchy total: every non-root stem has a real parent
 
 ## 8. Implementation notes
 
-Single module, functions grouped by responsibility so each can be tested alone:
+`wp.ts` is the entry point and the public barrel; it holds no logic. The
+implementation is a flat `src/`, one technical concern per file, each testable alone.
+Dependencies point strictly one way (L0 has no imports at all):
 
-- **parse** — read a file, split frontmatter, produce a `Wp` record
-- **graph** — build the stem index, derive parent/children/blocks, detect cycles
-- **query** — `ready`, rollup, natural sort
-- **check** — the rules in §7
-- **cli** — argument dispatch and output formatting
+- **L0 `ids.ts`** — the stem grammar, `compareWpIds`, `compareText`
+- **L0 `model.ts`** — the `WpError` taxonomy, `Wp`, `ScannedFile`, `Problem`
+- **L1 `frontmatter.ts`** — the YAML subset (§8.1) and EOL-preserving line splitting
+- **L1 `graph.ts`** — the stem index; derive parent/children/blocks, rollup, `ready`, cycles
+- **L1 `json.ts`** — the one JSON encoder: recursive key sort, non-ASCII escaping
+- **L2 `store.ts`** — the only module that imports `node:fs`: read path and the §6.1 writer
+- **L2 `check.ts`** — the rules in §7; takes a scan, not a directory
+- **L3 `transitions.ts`** — the `start` / `done` guards
+- **L3 `render.ts`** — output for every command except `tree`; returns strings
+- **L3 `tree.ts`** — the §6 glyph tree: connectors, rollup counts, column alignment
+- **L4 `cli.ts`** — the only module that touches `process.*`: argv, dispatch, exit codes
+
+Two boundaries carry the design: only `store.ts` reads or writes the disk, and only
+`cli.ts` touches the process. Renderers return strings, so output is assertable
+without spawning a subprocess. `CLAUDE.md` records the `grep` that enforces each.
 
 No index file and no cache: the folder is re-scanned on every invocation. At the
 scale this targets (hundreds of files) that is a few milliseconds, and it means
@@ -364,7 +388,9 @@ its absence:
 
 ## 12. Test plan
 
-Unit tests per group in §8, over a fixture folder:
+Unit tests per behaviour group (these mirror the `describe` blocks in
+`tests/wp.test.ts`, which are grouped by behaviour rather than by §8 module), over a
+fixture folder:
 
 - parse: valid leaf, valid container, both `blocked_by` forms, each parse error
 - graph: parent/children derivation, `blocks` inversion, cycle detection
