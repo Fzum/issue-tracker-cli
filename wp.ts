@@ -1079,4 +1079,19 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   }
 }
 
-if (import.meta.main) process.exit(main());
+if (import.meta.main) {
+  // A reader that closes the pipe early (`wp tree | head`, quitting `less`) makes
+  // the pending stdout write fail with EPIPE. That is not an error worth reporting,
+  // and swallowing it leaves the exit code `main` chose intact — so `wp check | head`
+  // still exits 1. Without this the EPIPE surfaces as an uncaught exception, because
+  // it is raised at flush time and a try/catch around `main` never sees it.
+  process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
+  });
+
+  // `process.exitCode` rather than `process.exit()`: a single large
+  // `process.stdout.write` followed by `process.exit()` discards everything past
+  // 128 KiB when stdout is a pipe. Every fs call here is synchronous, so nothing
+  // keeps the event loop alive and the process still exits immediately.
+  process.exitCode = main();
+}
