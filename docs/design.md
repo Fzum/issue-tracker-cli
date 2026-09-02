@@ -178,21 +178,35 @@ Agents may still flip `status` with an ordinary file edit.
 Commands operate on `./wps` by default; `--dir <path>` overrides.
 Every command accepts `--json` for machine consumption.
 
-### `wp next [--all]`
+### `wp next [--all] [--scope <id>]`
 
 Prints the next ready WP as `<id>\t<status>\t<short_description>`. With
 `--all`, prints the entire ready queue in order. Empty queue prints nothing and
 exits 0.
+
+`--scope <id>` narrows the queue to that WP and everything under it. One argument
+covers all three levels, because the stem depth already says which one it is:
+`--scope wp-m1` is a milestone, `wp-m1e2` an epic, `wp-m1e2u3` a single story.
+Matching is segment-wise, so `--scope wp-m1` never picks up `wp-m10`. Unknown id
+exits 2.
+
+Scoping filters readiness, it never relaxes it (§5): a leaf inside the scope whose
+`blocked_by` names a WP outside it stays unready and simply does not appear.
 
 ### `wp show <id>`
 
 Prints stored fields plus every derived value: type, parent, children, blocks,
 ready, and (for a container) rolled-up status. Unknown id exits 2.
 
-### `wp tree`
+### `wp tree [--scope <id>]`
 
 Prints the whole set as a drawn tree with rolled-up status per node. This is the
 progress view; it needs no schema of its own.
+
+`--scope <id>` prints one subtree, re-rooted: the named WP sits at column 0 with no
+spine above it, and its children indent one level rather than however deep they sit
+in the whole tree. `--json` rows keep their absolute `depth`, which is a property of
+the id rather than of the scope.
 
 ```
 ▶  Authentication milestone                  0/3  wp-m1
@@ -431,6 +445,7 @@ its absence:
 | `owner` / `claimed_at` | enough parallel agents that bare `doing` collides |
 | `cancelled` status | the BA agent over-generates and scope cuts wedge the queue |
 | `wp new` / `wp mv` | renumbering on insert becomes a real cost |
+| more than one `--scope` per run | one subtree stops being the unit people ask for |
 | relation types beyond `blocked_by` | a second edge type earns its keep |
 | index or cache | a scan is measurably too slow |
 

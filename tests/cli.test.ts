@@ -290,3 +290,104 @@ describe("CLI transitions", () => {
     expect(fixture.contentOf("wp-m1.md")).toContain("status: todo");
   });
 });
+
+describe("CLI --scope", () => {
+  test("given a scope when next all JSON runs then only that subtree is queued", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { description: "In scope" });
+    fixture.givenWp("wp-m10", { description: "Tenth milestone" });
+    fixture.givenWp("wp-m2", { description: "Out of scope" });
+
+    // When
+    const result = fixture.runCli(
+      "next",
+      "--all",
+      "--json",
+      "--scope",
+      "wp-m1",
+      "--dir",
+      fixture.directory,
+    );
+
+    // Then wp-m10 is not swept in by a string prefix
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      { id: "wp-m1e1", short_description: "In scope", status: "todo" },
+    ]);
+  });
+
+  test("given a scope when next runs then the first ready leaf under it is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "First milestone" });
+    fixture.givenWp("wp-m2", { status: null, description: "Second milestone" });
+    fixture.givenWp("wp-m2e1", { description: "Wanted" });
+
+    // When
+    const result = fixture.runCli("next", "--scope=wp-m2", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("wp-m2e1\ttodo\tWanted\n");
+  });
+
+  test("given a scope with no file when next runs then it is an unknown ID", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "Milestone" });
+
+    // When
+    const result = fixture.runCli("next", "--scope", "wp-m9", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("unknown work-package ID: wp-m9");
+  });
+
+  test("given a scope that is not a stem when tree runs then it is an unknown ID, not a crash", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "Milestone" });
+
+    // When
+    const result = fixture.runCli("tree", "--scope", "nonsense", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("unknown work-package ID: nonsense");
+  });
+
+  test("given scope on a command that has no queue when it runs then it is a usage error", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "Milestone" });
+
+    // When
+    const onShow = fixture.runCli("show", "wp-m1", "--scope", "wp-m1", "--dir", fixture.directory);
+    const beforeCommand = fixture.runCli("--scope", "wp-m1", "next", "--dir", fixture.directory);
+
+    // Then
+    expect(onShow.exitCode).toBe(2);
+    expect(onShow.stderr).toContain("unrecognized argument: --scope");
+    expect(beforeCommand.exitCode).toBe(2);
+    expect(beforeCommand.stderr).toContain("unrecognized argument: --scope");
+  });
+
+  test("given scope with no value when next runs then one value is demanded", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "Milestone" });
+
+    // When
+    const missing = fixture.runCli("next", "--scope", "--dir", fixture.directory);
+    const empty = fixture.runCli("next", "--scope=", "--dir", fixture.directory);
+
+    // Then
+    expect(missing.exitCode).toBe(2);
+    expect(missing.stderr).toContain("argument --scope: expected one value");
+    expect(empty.exitCode).toBe(2);
+    expect(empty.stderr).toContain("argument --scope: expected one value");
+  });
+});

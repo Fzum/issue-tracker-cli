@@ -20,6 +20,23 @@ export function parentId(stem: string): string | null {
   return segments.length === 1 ? null : `wp-${segments.slice(0, -1).join("")}`;
 }
 
+/**
+ * Is `id` the scope itself, or somewhere beneath it? Segment-wise, never
+ * string-wise: `"wp-m10e1".startsWith("wp-m1")` is true, so a scoped run that
+ * matched on the string would quietly sweep in a milestone nobody asked for.
+ *
+ * `isWithin(id, id)` is true, which is what lets one argument mean "this
+ * milestone", "this epic" or "just this story" without a special case for each.
+ * Both arguments must be grammatical stems — callers resolve the scope against
+ * the graph first, so an unknown ID is refused before it reaches this.
+ */
+export function isWithin(id: string, scope: string): boolean {
+  const scopeSegments = stemSegments(scope);
+  const idSegments = stemSegments(id);
+  if (idSegments.length < scopeSegments.length) return false;
+  return scopeSegments.every((segment, index) => idSegments[index] === segment);
+}
+
 /** Natural sort: segment letter, then segment number, so `wp-m2` precedes `wp-m10`. */
 export function compareWpIds(left: string, right: string): number {
   const leftSegments = stemSegments(left);

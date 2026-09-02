@@ -6,7 +6,7 @@
  * pure seam underneath and needs no separate fixture.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { parentId, type WpGraph } from "../wp.ts";
+import { isWithin, parentId, UnknownWpError, type WpGraph } from "../wp.ts";
 import { cleanupFixtures, Fixture } from "./helpers.ts";
 
 afterEach(cleanupFixtures);
@@ -211,6 +211,88 @@ describe("query", () => {
 
     // When
     const ready = fixture.givenGraph().readyQueue();
+
+    // Then
+    expect(ready).toEqual([]);
+  });
+});
+
+describe("scope", () => {
+  test("given m1 and m10 when membership is tested then segments decide, not string prefixes", () => {
+    // Given a milestone whose id is a string prefix of another milestone's
+
+    // When
+    // Then
+    expect(isWithin("wp-m1", "wp-m1")).toBe(true);
+    expect(isWithin("wp-m1e2u3", "wp-m1")).toBe(true);
+    expect(isWithin("wp-m10e1", "wp-m1")).toBe(false);
+    expect(isWithin("wp-m1", "wp-m1e2")).toBe(false);
+  });
+
+  test("given a hierarchy when a subtree is taken then the root and its descendants come back in order", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e2", { status: null, description: "Epic" });
+    fixture.givenWp("wp-m1e2u1", { description: "First story" });
+    fixture.givenWp("wp-m1e2u10", { description: "Tenth story" });
+    fixture.givenWp("wp-m1e2u2", { description: "Second story" });
+    fixture.givenWp("wp-m10", { description: "Tenth milestone" });
+
+    // When
+    const graph = fixture.givenGraph();
+
+    // Then
+    expect(graph.subtree("wp-m1e2")).toEqual([
+      "wp-m1e2",
+      "wp-m1e2u1",
+      "wp-m1e2u2",
+      "wp-m1e2u10",
+    ]);
+    expect(graph.subtree("wp-m1e2u2")).toEqual(["wp-m1e2u2"]);
+    expect(graph.subtree("wp-m1")).not.toContain("wp-m10");
+  });
+
+  test("given an id with no file when a subtree is taken then it is refused", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { description: "Milestone" });
+
+    // When
+    const graph = fixture.givenGraph();
+
+    // Then
+    expect(() => graph.subtree("wp-m9")).toThrow(UnknownWpError);
+    expect(() => graph.subtree("not-a-stem")).toThrow(UnknownWpError);
+  });
+
+  test("given a scope when the ready queue is built then only that subtree is offered", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { description: "In scope" });
+    fixture.givenWp("wp-m1e2", { description: "Also in scope" });
+    fixture.givenWp("wp-m2", { description: "Out of scope" });
+
+    // When
+    const readyIds = fixture
+      .givenGraph()
+      .readyQueue("wp-m1")
+      .map((wp) => wp.id);
+
+    // Then
+    expect(readyIds).toEqual(["wp-m1e1", "wp-m1e2"]);
+  });
+
+  test("given a leaf blocked from outside when a scope is applied then it is still not ready", () => {
+    // Given readiness is filtered by the scope, never relaxed by it
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { description: "Blocked", blockedBy: ["wp-m2"] });
+    fixture.givenWp("wp-m2", { description: "The blocker" });
+
+    // When
+    const ready = fixture.givenGraph().readyQueue("wp-m1");
 
     // Then
     expect(ready).toEqual([]);

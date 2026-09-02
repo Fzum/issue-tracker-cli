@@ -60,8 +60,13 @@ export function formatTransition(wp: Wp, asJson: boolean): string {
  * empty array so a consumer can always parse the output. Order matters: the guard
  * comes before the JSON branch.
  */
-export function formatNext(graph: WpGraph, allReady: boolean, asJson: boolean): string {
-  const ready = graph.readyQueue();
+export function formatNext(
+  graph: WpGraph,
+  allReady: boolean,
+  asJson: boolean,
+  scope: string | null = null,
+): string {
+  const ready = graph.readyQueue(scope);
   const selected = allReady ? ready : ready.slice(0, 1);
   if (selected.length === 0 && !allReady) return "";
 

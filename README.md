@@ -164,9 +164,9 @@ usage: wp [--dir PATH] [--json] {next,show,tree,check,start,done} ...
 
 | Command | What it does | Extra flags |
 |---|---|---|
-| `wp next` | Print the first ready leaf as `id<TAB>status<TAB>description`. Prints nothing when the queue is empty. | `--all` prints the whole ready queue |
+| `wp next` | Print the first ready leaf as `id<TAB>status<TAB>description`. Prints nothing when the queue is empty. | `--all` prints the whole ready queue; `--scope ID` narrows it to one subtree |
 | `wp show ID` | Print every stored and derived field of one work package, then its body. | — |
-| `wp tree` | Print the whole tree with status glyphs, `done/total` rollup counts per container, and `⊘ … ←` for anything that cannot start yet. | — |
+| `wp tree` | Print the whole tree with status glyphs, `done/total` rollup counts per container, and `⊘ … ←` for anything that cannot start yet. | `--scope ID` prints one subtree, re-rooted |
 | `wp check` | Validate the directory and print one line per problem. | — |
 | `wp start ID` | Claim a leaf by writing `status: doing`. | `--force` starts even when blocked |
 | `wp done ID` | Release a claimed leaf by writing `status: done`. | `--force` skips the "must be doing" check |
@@ -215,6 +215,20 @@ $ wp next --all --json
 An empty queue prints nothing and still exits `0`. Use `--all --json` if you
 want an explicit `[]`.
 
+`--scope ID` restricts the queue to that work package and everything under it.
+One argument covers every level, because the stem already says which level it is:
+
+```console
+$ wp next --all --scope wp-m1        # the milestone and everything in it
+$ wp next --all --scope wp-m1e2      # the epic and its stories
+$ wp next --all --scope wp-m1e2u3    # just that story
+```
+
+Matching is segment-wise, so `--scope wp-m1` never picks up `wp-m10`. A scope
+filters readiness and never relaxes it: a leaf inside the scope that is blocked
+by one outside it stays unready and simply does not appear. An ID with no file
+exits `2`.
+
 ### `wp show ID`
 
 ```console
@@ -257,8 +271,13 @@ $ wp show wp-m1e1u2 --json
 
 ### `wp tree`
 
+`--scope ID` prints one subtree, re-rooted: the named work package sits at column
+0 with no spine above it, and its children indent one level rather than however
+deep they sit in the whole tree.
+
 `--json` gives a flat, pre-ordered list with a `depth` field instead of
-glyphs, so consumers do not have to parse box drawing:
+glyphs, so consumers do not have to parse box drawing (`depth` stays absolute
+under `--scope` — it is a property of the ID, not of the scope):
 
 ```console
 $ wp tree
@@ -466,6 +485,7 @@ Agent output goes to `log/<id>.log`, one file per work package.
 |---|---|
 | `--dir PATH` | Work-package directory. Default `./wps`. |
 | `--role PATH` | Worker role prompt. Default `./prompts/worker.md`. |
+| `--scope ID` | Stay inside one work package and everything under it — a milestone, an epic or a single story. Default: the whole queue. |
 | `--verify COMMAND` | The gate a merge must pass, run through `sh -c`, so `&&` works. Default `bun test`. For this repository: `--verify "bun test && bun run typecheck"`. |
 | `--dry-run` | Print the first wave's plan and stop. Claims nothing, spawns nothing, merges nothing. |
 
@@ -483,11 +503,37 @@ orchestrator's own bookkeeping. **Anything staged is refused, wherever it is**:
 merge never touches, so starting would mean paying for a wave of agents and then
 failing every merge.
 
+### Running part of the tree
+
+`--scope ID` drains one subtree instead of the whole queue:
+
+```sh
+orchestrate --scope wp-m1        # the milestone and every epic under it
+orchestrate --scope wp-m1e2      # the epic and its stories
+orchestrate --scope wp-m1e2u3    # just that story
+```
+
+It is the same loop and the same readiness rules — the scope is handed to
+`wp next --scope`, nothing more. A leaf inside the scope blocked by one outside
+it never becomes ready, and no scoped run can release it, so a run whose first
+wave is empty says why rather than reporting an empty queue as success:
+
+```console
+$ orchestrate --scope wp-m1e2
+wave 1: nothing ready in scope wp-m1e2 (epic)
+  wp-m1e2u1  done
+  wp-m1e2u2  doing
+  wp-m1e2u3  blocked by wp-m2e1u1 (outside scope)
+queue empty after 0 wave(s): 0 merged, 0 left for a human
+```
+
+An empty queue is still a success, scoped or not: the exit code stays `0`.
+
 ### Deliberate limits
 
-- A wave spawns **everything** the queue offers. There is no cap and no worker
-  pool: tracking in-flight work costs more than the idle time at the end of a
-  wave.
+- A wave spawns **everything** the queue offers — including everything ready
+  under a `--scope`. There is no cap and no worker pool: tracking in-flight work
+  costs more than the idle time at the end of a wave.
 - Nothing times out an agent that hangs.
 - `doing` is not a lock. One orchestrator handing out distinct IDs cannot hand
   the same ID out twice, so two orchestrators at once is the unsupported case.

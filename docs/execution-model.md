@@ -27,6 +27,20 @@ to know "now". A dependency enforces itself by simply not appearing in the queue
 In-flight work excludes itself for free: `wp next` returns only `todo` leaves, and
 a claimed leaf is `doing`.
 
+### 2.1 Draining part of the bowl
+
+`orchestrate --scope <id>` runs the same loop over one subtree: the WP named and
+everything under it. The stem depth is what makes a milestone, an epic and a single
+story one argument rather than three — nobody has to say which they meant, and
+omitting it is "all", which is also the default.
+
+The scope reaches `wp next` as `--scope`, so readiness is still computed by the
+tracker and still includes ancestors. A leaf inside the scope blocked by one outside
+it never becomes ready, and this run can never release it — widening the scope is
+the only way out. That is why a scoped run whose first wave is empty prints the
+scoped tree's reason per WP, marking any blocker that is not itself in the scope,
+instead of reporting an empty queue as if the work were finished.
+
 ## 3. The wave loop
 
 Spawn everything the queue offers, wait for all of it, then re-query.
@@ -299,6 +313,8 @@ no shell to quote for.
 | claims (`owner`, a lock) | more than one orchestrator runs at a time |
 | file-level dependencies | worktrees stop being enough isolation |
 | a worker pool with in-flight tracking | wave idle time is measurably expensive |
+| more than one `--scope` per run | one subtree stops being the unit people ask for |
+| a cap on agents per wave | a milestone-wide scope spawns more than the machine likes |
 
 Double-claiming is not a risk under this model: `doing` is not a lock, but one
 orchestrator handing out distinct IDs cannot hand the same ID out twice.

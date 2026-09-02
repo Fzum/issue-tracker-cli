@@ -443,3 +443,115 @@ describe("tree", () => {
     ]);
   });
 });
+
+describe("tree --scope", () => {
+  test("given a scope when tree runs then the subtree is re-rooted", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Authentication milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Login epic" });
+    fixture.givenWp("wp-m1e1u1", { status: "done", description: "Password login" });
+    fixture.givenWp("wp-m1e1u2", { description: "Rate limit", blockedBy: ["wp-m2"] });
+    fixture.givenWp("wp-m2", { description: "Reporting milestone" });
+
+    // When
+    const result = fixture.runCli("tree", "--scope", "wp-m1e1", "--dir", fixture.directory);
+
+    // Then the epic is the root: no spine above it, and no sibling milestone
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "▶  Login epic         1/2  wp-m1e1",
+        "✔  ├─ Password login       wp-m1e1u1",
+        "⊘  └─ Rate limit           wp-m1e1u2  ← wp-m2",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("given a story scope when tree runs then only that story is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { description: "Wanted" });
+    fixture.givenWp("wp-m1e2", { description: "Not wanted" });
+
+    // When
+    const result = fixture.runCli("tree", "--scope=wp-m1e1", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("○  Wanted  wp-m1e1\n");
+  });
+
+  test("given a scope when tree JSON runs then only the subtree rows are printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Login epic" });
+    fixture.givenWp("wp-m1e1u1", { status: "done", description: "Password login" });
+    fixture.givenWp("wp-m1e1u2", { description: "Rate limit", blockedBy: ["wp-m2"] });
+    fixture.givenWp("wp-m2", { description: "Reporting milestone" });
+
+    // When
+    const result = fixture.runCli(
+      "tree",
+      "--json",
+      "--scope",
+      "wp-m1e1",
+      "--dir",
+      fixture.directory,
+    );
+
+    // Then depth stays absolute — it is a property of the id, not of the scope
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        id: "wp-m1e1",
+        status: "doing",
+        short_description: "Login epic",
+        depth: 2,
+        unmet_blockers: [],
+      },
+      {
+        id: "wp-m1e1u1",
+        status: "done",
+        short_description: "Password login",
+        depth: 3,
+        unmet_blockers: [],
+      },
+      {
+        id: "wp-m1e1u2",
+        status: "todo",
+        short_description: "Rate limit",
+        depth: 3,
+        unmet_blockers: ["wp-m2"],
+      },
+    ]);
+  });
+
+  test("given a deeper scope when tree runs then the spine is relative to the new root", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Epic" });
+    fixture.givenWp("wp-m1e1u1", { status: null, description: "Story" });
+    fixture.givenWp("wp-m1e1u1t1", { status: "done", description: "First task" });
+    fixture.givenWp("wp-m1e1u1t2", { description: "Second task" });
+
+    // When
+    const result = fixture.runCli("tree", "--scope", "wp-m1e1", "--dir", fixture.directory);
+
+    // Then the story indents one level below the epic, not three below the milestone
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "▶  Epic               0/1  wp-m1e1",
+        "▶  └─ Story           1/2  wp-m1e1u1",
+        "✔     ├─ First task        wp-m1e1u1t1",
+        "○     └─ Second task       wp-m1e1u1t2",
+        "",
+      ].join("\n"),
+    );
+  });
+});

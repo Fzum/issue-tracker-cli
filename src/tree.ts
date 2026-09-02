@@ -54,13 +54,19 @@ function blockersOf(graph: WpGraph, id: string): string[] {
   return graph.unmetDependencies(id).sort(compareBlockerIds);
 }
 
-function treeRows(graph: WpGraph): JsonObject[] {
-  return graph.orderedIds.map((id) => {
+/** The ids one rendering covers: the whole graph, or one subtree re-rooted. */
+function rowIds(graph: WpGraph, scope: string | null): readonly string[] {
+  return scope === null ? graph.orderedIds : graph.subtree(scope);
+}
+
+function treeRows(graph: WpGraph, scope: string | null): JsonObject[] {
+  return rowIds(graph, scope).map((id) => {
     const wp = graph.byId.get(id) as Wp;
     return {
       id,
       status: graph.resolvedStatus(id),
       short_description: wp.shortDescription,
+      // Absolute, not relative to the scope: depth is a property of the id.
       depth: stemSegments(id).length,
       unmet_blockers: blockersOf(graph, id),
     };
@@ -68,29 +74,39 @@ function treeRows(graph: WpGraph): JsonObject[] {
 }
 
 /**
- * The full parent chain, INCLUDING ids with no file. `WpGraph.ancestors` filters
- * those out; the spine glyphs need the unfiltered depth, so the two must stay
- * separate — collapsing them changes indentation exactly when a parent file is
- * missing, which is the case `wp check` reports.
+ * The parent chain, INCLUDING ids with no file. `WpGraph.ancestors` filters those
+ * out; the spine glyphs need the unfiltered depth, so the two must stay separate —
+ * collapsing them changes indentation exactly when a parent file is missing, which
+ * is the case `wp check` reports.
+ *
+ * A scope stops the walk at its own root, which is what re-roots the tree: the
+ * scope prints at column 0 with no spine above it, and its children indent one
+ * level rather than however deep they sit in the whole graph.
  */
-function ancestorChain(id: string): string[] {
+function ancestorChain(id: string, scope: string | null): string[] {
   const chain: string[] = [];
+  if (id === scope) return chain;
   let candidate = parentId(id);
   while (candidate !== null) {
     chain.push(candidate);
+    if (candidate === scope) break;
     candidate = parentId(candidate);
   }
   return chain;
 }
 
-function treeLines(graph: WpGraph): TreeLine[] {
+function treeLines(graph: WpGraph, scope: string | null): TreeLine[] {
+  const ids = rowIds(graph, scope);
+  // Over the rendered ids, not the whole graph. A subtree is closed under
+  // children, so every in-scope parent keeps the same last child either way; the
+  // scope root is the only id this changes, and its own connector is never drawn.
   const lastByParent = new Map<string | null, string>();
-  for (const id of graph.orderedIds) lastByParent.set(parentId(id), id);
+  for (const id of ids) lastByParent.set(parentId(id), id);
   const isLastChild = (id: string): boolean => lastByParent.get(parentId(id)) === id;
 
-  return graph.orderedIds.map((id): TreeLine => {
+  return ids.map((id): TreeLine => {
     const wp = graph.byId.get(id) as Wp;
-    const chain = ancestorChain(id);
+    const chain = ancestorChain(id, scope);
     const spine = chain
       .slice(0, -1)
       .reverse()
@@ -146,12 +162,16 @@ function padDisplayStart(value: string, width: number): string {
   return " ".repeat(Math.max(0, width - displayWidth(value))) + value;
 }
 
-export function formatTreeJson(graph: WpGraph): string {
-  return `${jsonText(treeRows(graph))}\n`;
+export function formatTreeJson(graph: WpGraph, scope: string | null = null): string {
+  return `${jsonText(treeRows(graph, scope))}\n`;
 }
 
-export function formatTree(graph: WpGraph, colour: boolean): string {
-  const lines = treeLines(graph);
+export function formatTree(
+  graph: WpGraph,
+  colour: boolean,
+  scope: string | null = null,
+): string {
+  const lines = treeLines(graph, scope);
   const labelWidth = lines.reduce(
     (width, line) => Math.max(width, displayWidth(line.label)),
     0,
