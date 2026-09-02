@@ -1,3 +1,9 @@
 # The shebang in wp.ts breaks if this file is checked out with CRLF endings
 # (core.autocrlf=true would otherwise rewrite it), so pin TypeScript to LF.
 *.ts text eol=lf
+
+# Same reason for workflow YAML: CI scripts must not gain CR bytes.
+*.yml text eol=lf
+
+# And for shell: a CR in the shebang or in `set -u` makes the script unrunnable.
+*.sh text eol=lf

@@ -12,6 +12,7 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "boundaries": "sh scripts/check-boundaries.sh",
     "wp": "bun run ./wp.ts",
     "orchestrate": "bun run ./orchestrate.ts"
   },

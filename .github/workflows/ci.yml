@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: bun test + typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before setup-bun on purpose: this is four greps and needs no runtime, so
+      # a broken module boundary fails in seconds instead of after an install.
+      - run: sh scripts/check-boundaries.sh
+
+      # `latest` on purpose: @types/bun is pinned to latest too, so the runtime
+      # and the types stay in step. See the typecheck note in CLAUDE.md.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun test
+
+      - run: bun run typecheck
