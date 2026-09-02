@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  agentAllowedTools,
   branchName,
   composePrompt,
   createDriver,
@@ -499,6 +500,28 @@ describe("prompts and names", () => {
     expect(prompt).toBe(
       "Role text.\n\n---\n\nid: wp-m1e1u1\nshort_description: Parse frontmatter\n",
     );
+  });
+
+  test("given a gate when the agent's tools are allowed then git and every program in it are listed", () => {
+    // Given
+    const verifyCommand = "bun test && bun run typecheck";
+
+    // When
+    const allowed = agentAllowedTools(verifyCommand);
+
+    // Then
+    expect(allowed).toEqual(["Bash(git:*)", "Bash(bun:*)"]);
+  });
+
+  test("given a gate that is only git when the agent's tools are allowed then git is listed once", () => {
+    // Given
+    const verifyCommand = "git diff --exit-code";
+
+    // When
+    const allowed = agentAllowedTools(verifyCommand);
+
+    // Then
+    expect(allowed).toEqual(["Bash(git:*)"]);
   });
 
   test("given an id when the workspace is named then the worktree is a sibling and the branch is namespaced", () => {
