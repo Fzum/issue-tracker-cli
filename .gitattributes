@@ -4,3 +4,6 @@
 
 # Same reason for workflow YAML: CI scripts must not gain CR bytes.
 *.yml text eol=lf
+
+# And for shell: a CR in the shebang or in `set -u` makes the script unrunnable.
+*.sh text eol=lf
