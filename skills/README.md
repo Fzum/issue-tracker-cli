@@ -39,6 +39,10 @@ To install persistently, from inside a Claude Code session:
 /plugin install /path/to/issue-tracker-cli
 ```
 
+`install.sh` prints that second line with the clone's real path already filled
+in, because a shell script cannot run a slash command itself. It is the only
+install step left to a human.
+
 Each skill answers to `/delivery:vision`, `/delivery:architecture` and
 `/delivery:breakdown`. The bare `/vision`, `/architecture` and `/breakdown` also
 work unless another command already claims the name.

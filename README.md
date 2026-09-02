@@ -18,25 +18,74 @@ a `prompts/worker.md`, and a command that verifies its build.
 
 ## Install
 
+Clone it once. There is no build step and no runtime dependency, so `wp.ts` and
+`orchestrate.ts` run straight from disk.
+
 ```sh
-bun install
+git clone https://github.com/Fzum/issue-tracker-cli.git ~/tools/issue-tracker-cli
 ```
 
-There is no build step. `wp.ts` and `orchestrate.ts` are executable and run
-straight from disk.
+Then, in every project that should get a queue:
+
+```console
+$ cd ~/projects/my-thing
+$ ~/tools/issue-tracker-cli/install.sh
+issue-tracker-cli -> /home/you/projects/my-thing
+
+  + wps/
+  + prompts/worker.md (from the template — edit it)
+  + log/ in .gitignore
+  + /home/you/.local/bin/wp -> /home/you/tools/issue-tracker-cli/wp.ts
+  + /home/you/.local/bin/orchestrate -> /home/you/tools/issue-tracker-cli/orchestrate.ts
+  = wp check: clean
+
+Next:
+  /plugin install /home/you/tools/issue-tracker-cli
+      in Claude Code, for the planning skills: /vision /architecture /breakdown
+  wp tree
+  orchestrate --dry-run --verify "<the command that verifies your build>"
+```
+
+Those are the three things a project must bring, plus the two steps a shell
+script cannot take for you: installing the plugin is a Claude Code command, and
+choosing the verify command is your call.
+
+`+` changed something, `=` was already in place, `!` wants a human — a bin
+directory that is not on your `PATH`, a `wp` link that points at something else,
+a missing `git init`, or `wp check` reporting problems. Nothing is overwritten:
+a `prompts/worker.md` of your own is kept, `log/` is added to `.gitignore` once,
+and every step skips itself when it is already done. So running it again after a
+`git pull` is safe.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | Report the same lines and write nothing. |
+| `-h`, `--help` | Print the built-in help. |
+| `WP_BIN_DIR` | Where the two symlinks go. Default `$HOME/.local/bin`. |
+
+| Code | Meaning |
+|---|---|
+| `0` | Installed |
+| `1` | Installed, but `wp check` found problems in an existing `wps/` |
+| `2` | Refused: no `bun`, or the current directory is the clone itself |
+
+### Without the installer
+
+The installer only creates files and symlinks. Both entry points work by
+absolute path with nothing installed at all:
 
 ```sh
 # From a project that has a wps/ directory:
 /path/to/issue-tracker-cli/wp.ts next
 /path/to/issue-tracker-cli/orchestrate.ts --dry-run
 
-# Or from this directory, pointing at the work packages:
+# Or from the clone, pointing at the work packages:
 bun run wp --dir /path/to/project/wps next
 ```
 
-`bun run wp` only resolves from this directory. From anywhere else, call
-`wp.ts` by absolute path. `orchestrate.ts` always runs in the project whose
-queue it drains, because that is the git repository it merges into.
+`bun run wp` only resolves from the clone. From anywhere else, call `wp.ts` by
+absolute path. `orchestrate.ts` always runs in the project whose queue it
+drains, because that is the git repository it merges into.
 
 ## Quick start
 
