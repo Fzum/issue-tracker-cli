@@ -181,19 +181,22 @@ Validates the folder (§7). Prints one line per problem as
 
 ### `wp start <id> [--force]`
 
-Claims a leaf by writing `status: doing`, then prints the `wp next` row. Guards,
-first failure wins:
+Starts work on a leaf by writing `status: doing`, then prints the `wp next` row.
+Guards, first failure wins:
 
 1. unknown id → exit 2
-2. already `doing` → prints the row, exits 0 (idempotent; re-running is safe)
-3. not a leaf → exit 2, `<id> is a container; only leaves carry status`
-4. another leaf is `doing` → exit 2, `<other> is already doing`
-5. not ready (§5) → exit 2, naming the unmet `blocked_by` targets, or the
-   current status when it is not `todo`
+2. not a leaf → exit 2, `<id> is a container; only leaves carry status`
+3. already `doing` → prints the row, exits 0 (idempotent; re-running is safe)
+4. an unmet `blocked_by` target on the leaf **or any ancestor** → exit 2,
+   `<id> is blocked by <targets>`
 
-`--force` skips 4 and 5 only. Guard 4 encodes the one-agent-one-WP rule (D9);
-it scans every leaf, so concurrent agents need `--force` until claims are
-modelled properly.
+`--force` skips guard 4 only.
+
+An unmet dependency is the *only* thing that stops a start. The current status
+is deliberately not checked, so a `done` leaf reopens as `doing` and any number
+of leaves may be `doing` at once — the CLI does not model claims (D9). Guard 4
+is the one judgement the tracker is better placed to make than the caller: when
+it fires, work the named target to `done` and `x` becomes startable.
 
 ### `wp done <id> [--force]`
 
@@ -208,7 +211,7 @@ Both commands build the graph through the normal read path first, so they refuse
 to touch a directory that `wp check` would reject. The write then locates the
 frontmatter block the way the parser does, replaces the single `status:` line
 (preserving its line ending), and never inserts the field — a leaf missing
-`status` is not `ready`, so the guards reject it first. The result goes to a
+`status` (rule 5 of §7) exits 2 rather than gaining one. The result goes to a
 temporary file in the same directory and is `rename`d over the original, so a
 torn write cannot leave a corrupt WP. Body, comments, unknown keys, key order
 and CRLF endings all survive byte-for-byte.

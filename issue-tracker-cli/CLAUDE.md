@@ -71,8 +71,9 @@ Changes that violate these contradict the design, not just the code:
    `setStatus` only ever *replaces* an existing `status:` line — never inserts one,
    never re-serializes the frontmatter, always via temp-file + rename. Everything
    else stays read-only, and agents may still flip `status` by hand. `wp new` and
-   `wp mv` are still deliberately deferred. `wp start` refuses when another leaf is
-   already `doing` (one agent, one WP — D9); `--force` overrides.
+   `wp mv` are still deliberately deferred. An unmet `blocked_by` target is the only
+   thing `wp start` refuses on — not the current status, and not another leaf being
+   `doing` (D9 records why that guard was removed); `--force` overrides even that.
 7. **The frontmatter parser is a YAML subset on purpose.** Nested maps, multiline
    scalars, anchors and flow mappings raise `FrontmatterParseError` rather than being
    silently misread — a misparsed `blocked_by` would corrupt the queue. Do not swap in a
