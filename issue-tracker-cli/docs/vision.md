@@ -205,6 +205,29 @@ install in any agent sandbox, while keeping the whole tool readable and
 patchable in one module. Development uses Bun's test runner and TypeScript for
 static checks.
 
+### D9 — `wp start` / `wp done` write; D6 stands otherwise (2026-09-02)
+
+D6 deferred the write commands until agents demonstrably mangled YAML. They are
+added early for a different reason: driving the loop by hand is the friction.
+`wp next` hands over a WP, and marking it `doing` — the thing that makes the
+epic and milestone above it read `doing` in `wp tree` — was a file edit the
+agent had to get right. Now the loop is `wp next` → `wp start` → work →
+`wp done`, entirely through the CLI.
+
+What kept D6 honest is preserved. The commands rewrite one line and rename a
+temp file over the original, so there is still nothing to corrupt, and they
+build the graph first so they refuse a folder `wp check` would reject. Nothing
+new is stored: `doing` was already a valid status and the rollup already derived
+it, so this adds a writer, not a schema.
+
+Because only one agent works at a time, `wp start` refuses when another leaf is
+already `doing` — a claim check, not a lock, and cheap because a single scan is
+authoritative. `--force` is the escape hatch. The day agents run concurrently
+this guard is wrong and `owner` / `claimed_at` (still deferred) is the answer.
+
+Still deferred: `wp new`, `wp mv`, a `cancelled` status, relation types beyond
+`blocked_by`.
+
 ---
 
 ## Outcome
