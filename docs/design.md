@@ -170,8 +170,41 @@ ready, and (for a container) rolled-up status. Unknown id exits 2.
 
 ### `wp tree`
 
-Prints the whole set as an indented tree with rolled-up status per node. This is
-the progress view; it needs no schema of its own.
+Prints the whole set as a drawn tree with rolled-up status per node. This is the
+progress view; it needs no schema of its own.
+
+```
+▶  Authentication milestone                  0/3  wp-m1
+▶  ├─ Login epic                             1/2  wp-m1e1
+✔  │  ├─ Password login                      2/2  wp-m1e1u1
+✔  │  │  ├─ Design the login form                 wp-m1e1u1t1
+✔  │  │  └─ Implement the session cookie          wp-m1e1u1t2
+○  │  └─ Rate limit login attempts                wp-m1e1u2
+○  ├─ Wire up the OAuth provider                  wp-m1e2
+○  └─ Send password reset e-mails                 wp-m1e3
+
+○  Reporting milestone                       0/2  wp-m2
+○  ├─ Export time entries as CSV                  wp-m2e1
+○  └─ Chart weekly totals                         wp-m2e2
+
+○  Tenth milestone, proves natural ordering       wp-m10
+```
+
+Line layout, in order: status glyph, two spaces, box-drawing prefix plus
+`short_description`, the done count, the id. The description and count columns
+are padded to the widest value in the output, so the ids line up. Padding is
+measured in terminal cells (`Bun.stringWidth`), not UTF-16 units, so CJK and
+emoji descriptions stay aligned. Lines never carry trailing whitespace.
+
+| Element | Rule |
+|---|---|
+| `✔` / `▶` / `○` / `?` | resolved status `done` / `doing` / `todo` / anything else |
+| colour | green / yellow / grey / red, only when stdout is a TTY and `NO_COLOR` is unset |
+| `1/2` | direct children resolving to `done`, over total direct children; containers only |
+| blank line | before every milestone (depth 1) except the first |
+
+`--json` is unchanged: one flat row per work package with `id`, `status`,
+`short_description` and `depth`, in `compareWpIds` order.
 
 ### `wp check`
 
