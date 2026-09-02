@@ -191,11 +191,31 @@ progress view; it needs no schema of its own.
 ○  Tenth milestone, proves natural ordering       wp-m10
 ```
 
+A WP that cannot start yet trades its status glyph for `⊘` and gains a blocker
+list after the id:
+
+```
+▶  Authentication milestone               0/3  wp-m1
+▶  ├─ Login epic                          1/2  wp-m1e1
+✔  │  ├─ Password login                   2/2  wp-m1e1u1
+✔  │  │  ├─ Design the login form              wp-m1e1u1t1
+✔  │  │  └─ Implement the session cookie       wp-m1e1u1t2
+⊘  │  └─ Rate limit login attempts             wp-m1e1u2    ← wp-m2e1
+○  ├─ Wire up the OAuth provider               wp-m1e2
+○  └─ Send password reset e-mails              wp-m1e3
+
+○  Reporting milestone                    0/2  wp-m2
+○  ├─ Export time entries as CSV               wp-m2e1
+○  └─ Chart weekly totals                      wp-m2e2
+```
+
 Line layout, in order: status glyph, two spaces, box-drawing prefix plus
-`short_description`, the done count, the id. The description and count columns
-are padded to the widest value in the output, so the ids line up. Padding is
-measured in terminal cells (`Bun.stringWidth`), not UTF-16 units, so CJK and
-emoji descriptions stay aligned. Lines never carry trailing whitespace.
+`short_description`, the done count, the id, the blocker list. The description
+and count columns are padded to the widest value in the output, so the ids line
+up; the id column is padded only when some line carries a blocker list, so a
+tree with nothing blocked prints exactly as it did before. Padding is measured
+in terminal cells (`Bun.stringWidth`), not UTF-16 units, so CJK and emoji
+descriptions stay aligned. Lines never carry trailing whitespace.
 
 `Bun.stringWidth` landed in Bun 1.0.29, so that is the runtime floor recorded in
 `package.json` `engines`. `@types/bun` tracks `latest` independently, so `tsc`
@@ -204,12 +224,35 @@ cannot catch an API the installed runtime lacks — only `bun test` can.
 | Element | Rule |
 |---|---|
 | `✔` / `▶` / `○` / `?` | resolved status `done` / `doing` / `todo` / anything else |
-| colour | green / yellow / grey / red, only when stdout is a TTY and `NO_COLOR` is unset |
+| `⊘` | the WP has unmet dependencies **and** its resolved status is neither `done` nor `doing` |
+| colour | green / yellow / grey / red / magenta (`⊘`), only when stdout is a TTY and `NO_COLOR` is unset |
 | `1/2` | direct children resolving to `done`, over total direct children; containers only |
+| `← a, b` | unmet dependencies, `compareWpIds` order |
 | blank line | before every milestone (depth 1) except the first |
 
-`--json` is unchanged: one flat row per work package with `id`, `status`,
-`short_description` and `depth`, in `compareWpIds` order.
+The blocker list is `unmetDependencies` — the WP's own `blocked_by` plus every
+ancestor's, minus the targets already `done`. That is the same function the
+`wp start` guard uses, so the tree can never call a WP startable when `wp start`
+would refuse it. An unknown target counts as unmet and is listed; `wp check`
+reports it separately (rule 4).
+
+Two consequences worth stating, because both are deliberate:
+
+- The list is per line, not per owner, so an ancestor's blocker repeats on each
+  descendant. Every `⊘` therefore states its own reason; you never have to read
+  up the tree to find out why a line is stuck.
+- `⊘` is driven by the WP's own and its ancestors' dependencies only, never
+  rolled up from children. A container whose every leaf is blocked but which
+  carries no `blocked_by` of its own keeps its rolled-up status glyph. This keeps
+  the invariant `⊘` ⟺ a blocker list follows.
+
+A WP that is already `done` or `doing` keeps its own glyph but still shows its
+blocker list — reachable by `wp start --force` or a hand edit, and worth
+reporting rather than hiding.
+
+`--json` gains one key per row: `unmet_blockers`, the same list. Rows remain one
+flat record per work package with `id`, `status`, `short_description`, `depth`
+and `unmet_blockers`, in `compareWpIds` order.
 
 ### `wp check`
 
