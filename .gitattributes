@@ -1,0 +1,3 @@
+# The shebang in wp.ts breaks if this file is checked out with CRLF endings
+# (core.autocrlf=true would otherwise rewrite it), so pin TypeScript to LF.
+*.ts text eol=lf
