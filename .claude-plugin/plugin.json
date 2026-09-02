@@ -1,0 +1,9 @@
+{
+  "name": "delivery",
+  "displayName": "Delivery",
+  "version": "1.0.0",
+  "description": "Plan a product, then break it into work packages the wp tracker can run. /vision writes the PRD, /architecture decides how it gets built, /breakdown writes the wps/ tree.",
+  "author": {
+    "name": "Fabian Sellemond"
+  }
+}
