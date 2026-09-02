@@ -694,7 +694,7 @@ describe("CLI", () => {
     expect(result.stderr).toContain("unknown work-package ID");
   });
 
-  test("given a hierarchy when tree runs then an indented rollup is printed", () => {
+  test("given a hierarchy when tree runs then a glyph tree with a done count is printed", () => {
     // Given
     const fixture = new Fixture();
     fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
@@ -706,8 +706,117 @@ describe("CLI", () => {
     // Then
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      "wp-m1\tdoing\tMilestone\n  wp-m1e1\tdoing\tChild\n",
+      ["▶  Milestone  0/1  wp-m1", "▶  └─ Child        wp-m1e1", ""].join("\n"),
     );
+  });
+
+  test("given nested milestones when tree runs then connectors, counts and blank lines align", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Authentication milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Login epic" });
+    fixture.givenWp("wp-m1e1u1", { status: null, description: "Password login" });
+    fixture.givenWp("wp-m1e1u1t1", { status: "done", description: "Design the login form" });
+    fixture.givenWp("wp-m1e1u1t2", {
+      status: "done",
+      description: "Implement the session cookie",
+    });
+    fixture.givenWp("wp-m1e1u2", { status: "todo", description: "Rate limit login attempts" });
+    fixture.givenWp("wp-m1e2", { status: "todo", description: "Wire up the OAuth provider" });
+    fixture.givenWp("wp-m1e3", { status: "todo", description: "Send password reset e-mails" });
+    fixture.givenWp("wp-m2", { status: null, description: "Reporting milestone" });
+    fixture.givenWp("wp-m2e1", { status: "todo", description: "Export time entries as CSV" });
+    fixture.givenWp("wp-m2e2", { status: "todo", description: "Chart weekly totals" });
+    fixture.givenWp("wp-m10", {
+      status: "todo",
+      description: "Tenth milestone, proves natural ordering",
+    });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "▶  Authentication milestone                  0/3  wp-m1",
+        "▶  ├─ Login epic                             1/2  wp-m1e1",
+        "✔  │  ├─ Password login                      2/2  wp-m1e1u1",
+        "✔  │  │  ├─ Design the login form                 wp-m1e1u1t1",
+        "✔  │  │  └─ Implement the session cookie          wp-m1e1u1t2",
+        "○  │  └─ Rate limit login attempts                wp-m1e1u2",
+        "○  ├─ Wire up the OAuth provider                  wp-m1e2",
+        "○  └─ Send password reset e-mails                 wp-m1e3",
+        "",
+        "○  Reporting milestone                       0/2  wp-m2",
+        "○  ├─ Export time entries as CSV                  wp-m2e1",
+        "○  └─ Chart weekly totals                         wp-m2e2",
+        "",
+        "○  Tenth milestone, proves natural ordering       wp-m10",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("given a piped stdout when tree runs then no colour escapes are emitted", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "done", description: "Only milestone" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("✔  Only milestone  wp-m1\n");
+  });
+
+  test("given an unknown status when tree runs then a question mark glyph is printed", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: "blocked", description: "Odd status" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("?  Odd status  wp-m1\n");
+  });
+
+  test("given a double-width description when tree runs then the ids stay in one column", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "ASCII milestone" });
+    fixture.givenWp("wp-m1e1", { status: "done", description: "Grüße 日本語 🚀 emoji" });
+    fixture.givenWp("wp-m1e2", { status: "todo", description: "plain ascii sibling xx" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    const idColumns = result.stdout
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => Bun.stringWidth(line.slice(0, line.lastIndexOf("wp-"))));
+    expect(new Set(idColumns).size).toBe(1);
+  });
+
+  test("given any tree output when tree runs then no line has trailing whitespace", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Long milestone description here" });
+    fixture.givenWp("wp-m1e1", { status: "todo", description: "Short" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    for (const line of result.stdout.split("\n")) {
+      expect(line).toBe(line.trimEnd());
+    }
   });
 
   test("given an invalid folder when check runs then problems and exit one are returned", () => {
