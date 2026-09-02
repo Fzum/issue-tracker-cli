@@ -1,8 +1,8 @@
 # Agentic Issue Tracker CLI
 
 A work-queue CLI over markdown files. The filesystem *is* the tracker — no
-database, no server. One TypeScript module for Bun 1.0.29+, zero runtime
-dependencies.
+database, no server. TypeScript for Bun 1.0.29+, zero runtime dependencies.
+`wp.ts` is the entry point; the implementation lives in `src/`.
 
 The question it answers is: **what should an agent work on next?** `wp next`
 answers it; `wp start` / `wp done` let the agent record the answer.
@@ -375,6 +375,6 @@ and write real files to temp dirs.
   derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit
   codes.
 - [`docs/vision.md`](docs/vision.md) — brainstorming plus the decision log
-  D1–D9. Read it before questioning a constraint; most surprising choices are
+  D1–D11. Read it before questioning a constraint; most surprising choices are
   deliberate.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for agents working on this repo.

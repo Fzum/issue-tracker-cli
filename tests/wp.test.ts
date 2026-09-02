@@ -936,6 +936,61 @@ describe("CLI", () => {
     expect(result.stdout).toBe("⊘  Lonely  wp-m1  ← wp-m9\n");
   });
 
+  test("given blockers that are not valid stems when tree runs then they sort after the valid one", () => {
+    // Given
+    // `aaa` sorts before `wp-m2` lexicographically, so the valid stem can only come
+    // first if grammar beats text; `aaa` before `wp-zz9` pins the tail order.
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: "todo",
+      description: "Broken",
+      blockedBy: ["wp-zz9", "aaa", "wp-m2"],
+    });
+    fixture.givenWp("wp-m2", { status: "todo", description: "Fine" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      ["⊘  Broken  wp-m1  ← wp-m2, aaa, wp-zz9", "", "○  Fine    wp-m2", ""].join("\n"),
+    );
+  });
+
+  test("given blockers that are not valid stems when tree JSON runs then they sort after the valid one", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: "todo",
+      description: "Broken",
+      blockedBy: ["wp-zz9", "aaa", "wp-m2"],
+    });
+    fixture.givenWp("wp-m2", { status: "todo", description: "Fine" });
+
+    // When
+    const result = fixture.runCli("tree", "--json", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        depth: 1,
+        id: "wp-m1",
+        short_description: "Broken",
+        status: "todo",
+        unmet_blockers: ["wp-m2", "aaa", "wp-zz9"],
+      },
+      {
+        depth: 1,
+        id: "wp-m2",
+        short_description: "Fine",
+        status: "todo",
+        unmet_blockers: [],
+      },
+    ]);
+  });
+
   test("given a blocked leaf that is already doing when tree runs then the doing glyph is kept", () => {
     // Given
     const fixture = new Fixture();
@@ -1012,6 +1067,69 @@ describe("CLI", () => {
         depth: 2,
         id: "wp-m1e2",
         short_description: "Step two",
+        status: "todo",
+        unmet_blockers: [],
+      },
+    ]);
+  });
+
+  test("given an own and an inherited blocker when tree JSON runs then the list is in compareWpIds order", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: null,
+      description: "Auth",
+      blockedBy: ["wp-m2e2"],
+    });
+    fixture.givenWp("wp-m1e1", {
+      status: "todo",
+      description: "Endpoint",
+      blockedBy: ["wp-m2e10"],
+    });
+    fixture.givenWp("wp-m2", { status: null, description: "Platform" });
+    fixture.givenWp("wp-m2e2", { status: "todo", description: "Config" });
+    fixture.givenWp("wp-m2e10", { status: "todo", description: "Later" });
+
+    // When
+    const result = fixture.runCli("tree", "--json", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        depth: 1,
+        id: "wp-m1",
+        short_description: "Auth",
+        status: "todo",
+        unmet_blockers: ["wp-m2e2"],
+      },
+      {
+        // The own blocker is collected before the inherited one, so insertion order
+        // would read `wp-m2e10, wp-m2e2`; `compareWpIds` puts `e2` before `e10`.
+        depth: 2,
+        id: "wp-m1e1",
+        short_description: "Endpoint",
+        status: "todo",
+        unmet_blockers: ["wp-m2e2", "wp-m2e10"],
+      },
+      {
+        depth: 1,
+        id: "wp-m2",
+        short_description: "Platform",
+        status: "todo",
+        unmet_blockers: [],
+      },
+      {
+        depth: 2,
+        id: "wp-m2e2",
+        short_description: "Config",
+        status: "todo",
+        unmet_blockers: [],
+      },
+      {
+        depth: 2,
+        id: "wp-m2e10",
+        short_description: "Later",
         status: "todo",
         unmet_blockers: [],
       },
@@ -1467,5 +1585,115 @@ describe("CLI transitions", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("run 'wp check'");
     expect(fixture.contentOf("wp-m1.md")).toContain("status: todo");
+  });
+});
+
+/**
+ * `wp.ts` ends with `process.exitCode = main()` rather than `process.exit(main())`,
+ * because the latter discards output past 128 KiB on a pipe. The cost is that stdout
+ * EPIPE is no longer swallowed by the exit, so the entry guard installs a handler for
+ * it. These two cases pin both halves: output must survive a draining reader, and an
+ * early-closing reader must not turn into a crash. Both need output larger than the
+ * ~64 KiB pipe buffer, so neither is visible on a small fixture.
+ */
+describe("CLI piped output", () => {
+  function givenLargeTree(fixture: Fixture): void {
+    fixture.givenWp("wp-m1", { status: null, description: "Large milestone" });
+    for (let index = 1; index <= 900; index += 1) {
+      fixture.givenWp(`wp-m1e${index}`, {
+        description: `Leaf ${index} with a description long enough to push the total output past the pipe buffer`,
+      });
+    }
+  }
+
+  function whenPipedThrough(fixture: Fixture, reader: string, ...arguments_: string[]): CliResult {
+    const result = Bun.spawnSync({
+      cmd: [
+        "bash",
+        "-c",
+        `set -o pipefail; "$1" "$2" "\${@:3}" | ${reader}`,
+        "bash",
+        process.execPath,
+        CLI_PATH,
+        ...arguments_,
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const decoder = new TextDecoder();
+    return {
+      exitCode: result.exitCode,
+      stdout: decoder.decode(result.stdout),
+      stderr: decoder.decode(result.stderr),
+    };
+  }
+
+  /**
+   * A file and a pipe must receive the same bytes. Only file redirection is immune to
+   * the truncation, so comparing two pipes would pass even while both lost data.
+   */
+  function whenRedirectedToFile(fixture: Fixture, ...arguments_: string[]): string {
+    const target = join(fixture.root, "redirected.out");
+    Bun.spawnSync({
+      cmd: [
+        "bash",
+        "-c",
+        'target="$3"; "$1" "$2" "${@:4}" > "$target"',
+        "bash",
+        process.execPath,
+        CLI_PATH,
+        target,
+        ...arguments_,
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return readFileSync(target, "utf8");
+  }
+
+  test("given output past the pipe buffer when the reader drains it then nothing is truncated", () => {
+    // Given
+    const fixture = new Fixture();
+    givenLargeTree(fixture);
+    const expected = whenRedirectedToFile(fixture, "tree", "--json", "--dir", fixture.directory);
+    expect(expected.length).toBeGreaterThan(128 * 1024);
+
+    // When
+    const piped = whenPipedThrough(fixture, "cat", "tree", "--json", "--dir", fixture.directory);
+
+    // Then
+    expect(piped.exitCode).toBe(0);
+    expect(piped.stdout).toBe(expected);
+  });
+
+  test("given output past the pipe buffer when the reader closes early then it exits cleanly", () => {
+    // Given
+    const fixture = new Fixture();
+    givenLargeTree(fixture);
+
+    // When
+    const result = whenPipedThrough(fixture, "head -1", "tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("given check finds problems when the reader closes early then exit one still survives", () => {
+    // Given
+    // `status: bogus` trips two rules per file, so the report clears the pipe buffer.
+    const fixture = new Fixture();
+    for (let index = 1; index <= 900; index += 1) {
+      fixture.givenRawFile(`wp-m${index}.md`, "---\nstatus: bogus\n---\n");
+    }
+    expect(fixture.runCli("check", "--dir", fixture.directory).stdout.length)
+      .toBeGreaterThan(64 * 1024);
+
+    // When
+    const result = whenPipedThrough(fixture, "head -1", "check", "--dir", fixture.directory);
+
+    // Then
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(1);
   });
 });

@@ -198,6 +198,9 @@ Progress rollup falls out for free — no extra schema.
 
 ### D8 — Single-file TypeScript on Bun (2026-09-01)
 
+> Superseded in part by D11: the "one module" clause no longer holds. Everything
+> else in D8 — zero runtime dependencies, no build step, the YAML subset — stands.
+
 `issue-tracker-cli/wp.ts`, no runtime dependencies. The CLI is an independent
 Bun project that can be opened directly in an IDE. Frontmatter is parsed as a
 deliberate YAML *subset* (see spec) rather than through a package — a minimal
@@ -277,6 +280,58 @@ Still open: `orchestrate.ts` is not built, and the verify command it runs is
 hardcoded rather than configured per project.
 
 Full runbook: `docs/execution-model.md`.
+
+### D11 — Split `wp.ts` into `src/` modules (2026-09-02)
+
+D8 chose one module to keep the tool readable and patchable. At ~1080 lines that
+stopped being true: finding the tree renderer meant scrolling past the YAML
+parser, the graph, and the argv grammar. The split is by *technical concern*, not
+by command — eleven flat files in `src/`, with `wp.ts` reduced to the shebang, the
+entry guard, and an explicit list of public re-exports.
+
+Everything D8 was actually protecting is untouched: zero runtime dependencies, no
+build step, no bundler, and the frontmatter parser is still the same deliberate
+YAML subset. `bun test` and `bun run typecheck` remain the whole gate. The split
+moved code and changed no behaviour — output was verified byte-identical across
+29 captured CLI invocations (75 recorded stdout/stderr/exit-code artifacts),
+including exit codes and the four `show` body shapes.
+
+Two boundaries make the layout worth having, and each is a one-line `grep`
+recorded in `CLAUDE.md`: only `src/store.ts` may import `node:fs`, and only
+`src/cli.ts` may touch `process.*`. That second one forced renderers to *return*
+strings instead of printing, which is why output is now assertable without
+spawning a subprocess.
+
+Deliberately not done, to keep the split honest rather than architectural: no
+filesystem port or adapter interface, no dependency injection, no command-pattern
+classes, no one-file-per-command, no `utils.ts`, no nested directories under
+`src/`, and no renaming of any public symbol. `src/` is flat so every intra-module
+import is `./x.ts`; promoting to directories later is a plain `git mv`.
+
+One helper changed owner rather than merely changing file. `unmetDependencies` was
+a private function in the monolith, called both by `wp start`'s guard and by
+`wp tree`'s blocker list. Those two callers now sit in different modules, and
+`src/tree.ts` may not import the write path, so the helper became a `WpGraph`
+method beside `isReady` — the derivation layer that already owns invariant 5's
+other polarity. The barrel's export list is untouched — the helper was never
+exported, and `WpGraph` already was.
+
+One real bug surfaced while doing it, and its fix is the one intentional behaviour
+change here: `wp.ts` ended with `process.exit(main())`, which discards everything
+past 128 KiB when stdout is a pipe. `wp tree --json`, `wp check --json` and
+`wp next --all --json` were already truncating on large trees — silently, on the
+`--json` paths that exist for machine consumers. It is now `process.exitCode =
+main()`.
+
+That fix has a cost that is easy to miss. `process.exit()` was also swallowing the
+stdout EPIPE that a reader closing the pipe early (`wp tree | head`, quitting
+`less`) provokes; without it, the EPIPE surfaced as an uncaught exception and turned
+a clean exit 0 into a crash dump and exit 1 — which in this CLI *means* "check found
+problems". The entry guard now installs an EPIPE handler alongside the exit code, and
+three tests in `describe("CLI piped output")` pin all of it: one that the pipe and a
+file receive the same bytes, and two that an early-closing reader preserves the exit
+code with an empty stderr. All three need output past the ~64 KiB pipe buffer, which
+is why the pre-existing suite never saw either bug.
 
 ---
 
