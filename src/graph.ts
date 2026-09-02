@@ -138,7 +138,7 @@ export class WpGraph {
    * can never call a WP startable when `wp start` would refuse it.
    *
    * Owner order, de-duplicated: the WP's own targets first, then each ancestor's.
-   * `wp start` reports them in that order; `src/tree.ts` sorts by `compareWpIds`
+   * `wp start` reports them in that order; `src/tree.ts` sorts by `compareBlockerIds`
    * first, because its column is read by eye.
    */
   unmetDependencies(id: string): string[] {

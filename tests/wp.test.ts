@@ -936,6 +936,61 @@ describe("CLI", () => {
     expect(result.stdout).toBe("⊘  Lonely  wp-m1  ← wp-m9\n");
   });
 
+  test("given blockers that are not valid stems when tree runs then they sort after the valid one", () => {
+    // Given
+    // `aaa` sorts before `wp-m2` lexicographically, so the valid stem can only come
+    // first if grammar beats text; `aaa` before `wp-zz9` pins the tail order.
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: "todo",
+      description: "Broken",
+      blockedBy: ["wp-zz9", "aaa", "wp-m2"],
+    });
+    fixture.givenWp("wp-m2", { status: "todo", description: "Fine" });
+
+    // When
+    const result = fixture.runCli("tree", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      ["⊘  Broken  wp-m1  ← wp-m2, aaa, wp-zz9", "", "○  Fine    wp-m2", ""].join("\n"),
+    );
+  });
+
+  test("given blockers that are not valid stems when tree JSON runs then they sort after the valid one", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", {
+      status: "todo",
+      description: "Broken",
+      blockedBy: ["wp-zz9", "aaa", "wp-m2"],
+    });
+    fixture.givenWp("wp-m2", { status: "todo", description: "Fine" });
+
+    // When
+    const result = fixture.runCli("tree", "--json", "--dir", fixture.directory);
+
+    // Then
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        depth: 1,
+        id: "wp-m1",
+        short_description: "Broken",
+        status: "todo",
+        unmet_blockers: ["wp-m2", "aaa", "wp-zz9"],
+      },
+      {
+        depth: 1,
+        id: "wp-m2",
+        short_description: "Fine",
+        status: "todo",
+        unmet_blockers: [],
+      },
+    ]);
+  });
+
   test("given a blocked leaf that is already doing when tree runs then the doing glyph is kept", () => {
     // Given
     const fixture = new Fixture();

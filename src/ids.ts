@@ -39,9 +39,26 @@ export function compareWpIds(left: string, right: string): number {
 }
 
 /**
+ * Ordering for `blocked_by` targets, the one place unvalidated strings reach a sort.
+ * A target names a WP that need not exist and need not even be a grammatical stem —
+ * `wp check` reports either as rule 4, an unknown WP — so `compareWpIds` would throw and
+ * take `wp tree` down with it, exactly when the tree is the thing that would name the
+ * problem. Grammatical stems keep natural order and sort first; anything else follows
+ * them, lexicographically.
+ */
+export function compareBlockerIds(left: string, right: string): number {
+  const leftIsStem = STEM_PATTERN.test(left);
+  const rightIsStem = STEM_PATTERN.test(right);
+  if (leftIsStem && rightIsStem) return compareWpIds(left, right);
+  if (leftIsStem !== rightIsStem) return leftIsStem ? -1 : 1;
+  return compareText(left, right);
+}
+
+/**
  * Lexicographic. NEVER apply this to work-package IDs — it sorts `wp-m10` before
  * `wp-m2`. It is for filenames, object keys and problem messages only; IDs use
- * `compareWpIds`.
+ * `compareWpIds`. The tail of `compareBlockerIds` is not an exception to that: it
+ * reaches here only for a string that is no work-package ID at all.
  */
 export function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;

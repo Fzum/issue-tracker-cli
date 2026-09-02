@@ -53,7 +53,7 @@ The CLI is a pipeline. One concern per file, each testable alone; the data path 
 
 | Module | Concern |
 |---|---|
-| `src/ids.ts` | Invariant 1: the stem grammar, `compareWpIds`, `compareText`. Imports nothing. |
+| `src/ids.ts` | Invariant 1: the stem grammar, `compareWpIds`, `compareBlockerIds`, `compareText`. Imports nothing. |
 | `src/model.ts` | The `WpError` taxonomy plus `Wp` / `ScannedFile` / `Problem`. Imports nothing. |
 | `src/frontmatter.ts` | Invariant 7: the deliberate YAML subset, and EOL-preserving line splitting |
 | `src/graph.ts` | Invariants 3, 4, 5: every derivation. Pure. |
@@ -157,6 +157,15 @@ Ordering everywhere is `compareWpIds` — natural sort by segment letter then nu
 value, so `wp-m2` precedes `wp-m10`. Never fall back to lexicographic sort on IDs.
 `compareText` in `src/ids.ts` is the lexicographic one; it is for filenames, object keys
 and problem messages only.
+
+One exception, also in `src/ids.ts`: sort `blocked_by` targets with
+`compareBlockerIds`. A target is an unvalidated string — it need not name an existing
+file and need not be a grammatical stem — and `compareWpIds` **throws** on a stem it
+cannot parse, so sorting raw targets with it crashes `wp tree` (exit 1, which in this
+CLI means "`wp check` found problems"). `compareBlockerIds` keeps natural order for
+grammatical stems and puts the rest after them, lexicographically. `src/tree.ts` is the
+only caller today, because it is the only place a raw target reaches a sort; anything
+that sorts them in future belongs there too.
 
 Exit codes: `0` success (including an empty queue), `1` only from `wp check` finding
 problems, `2` usage error / unknown ID / unreadable directory. `main` in `src/cli.ts` is

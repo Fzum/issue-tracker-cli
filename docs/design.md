@@ -239,7 +239,7 @@ cannot catch an API the installed runtime lacks — only `bun test` can.
 | `⊘` | the WP has unmet dependencies **and** its resolved status is neither `done` nor `doing` |
 | colour | green / yellow / grey / red / magenta (`⊘`), only when stdout is a TTY and `NO_COLOR` is unset |
 | `1/2` | direct children resolving to `done`, over total direct children; containers only |
-| `← a, b` | unmet dependencies, `compareWpIds` order |
+| `← a, b` | unmet dependencies, `compareBlockerIds` order |
 | blank line | before every milestone (depth 1) except the first |
 
 The blocker list is `unmetDependencies` — the WP's own `blocked_by` plus every
@@ -247,6 +247,14 @@ ancestor's, minus the targets already `done`. That is the same function the
 `wp start` guard uses, so the tree can never call a WP startable when `wp start`
 would refuse it. An unknown target counts as unmet and is listed; `wp check`
 reports it separately (rule 4).
+
+A target is an unvalidated string, so it need not even be a grammatical stem.
+Ordering therefore uses `compareBlockerIds`, not `compareWpIds`: grammatical stems
+sort first in natural order, and anything ungrammatical follows them
+lexicographically. `compareWpIds` throws on a stem it cannot parse, which would take
+`wp tree` down with an uncaught error — and exit 1, the code that means "`wp check`
+found problems" — exactly when the tree is the thing that would name the offending
+target.
 
 Two consequences worth stating, because both are deliberate:
 
@@ -339,7 +347,7 @@ Rule 11 keeps the derived hierarchy total: every non-root stem has a real parent
 implementation is a flat `src/`, one technical concern per file, each testable alone.
 Dependencies point strictly one way (L0 has no imports at all):
 
-- **L0 `ids.ts`** — the stem grammar, `compareWpIds`, `compareText`
+- **L0 `ids.ts`** — the stem grammar, `compareWpIds`, `compareBlockerIds`, `compareText`
 - **L0 `model.ts`** — the `WpError` taxonomy, `Wp`, `ScannedFile`, `Problem`
 - **L1 `frontmatter.ts`** — the YAML subset (§8.1) and EOL-preserving line splitting
 - **L1 `graph.ts`** — the stem index; derive parent/children/blocks, rollup, `ready`, cycles

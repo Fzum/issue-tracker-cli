@@ -7,7 +7,7 @@
  * caller decides whether colour is wanted and passes it in.
  */
 
-import { compareWpIds, parentId, stemSegments } from "./ids.ts";
+import { compareBlockerIds, parentId, stemSegments } from "./ids.ts";
 import { type Wp } from "./model.ts";
 import { type WpGraph } from "./graph.ts";
 import { type JsonObject, jsonText } from "./json.ts";
@@ -46,9 +46,12 @@ interface TreeLine {
  * The unmet `blocked_by` targets that stop this WP, its own and every ancestor's,
  * in tree order. `WpGraph.unmetDependencies` is the same source the `wp start` guard
  * refuses on, so the tree can never claim a WP is startable when `wp start` would not.
+ *
+ * `compareBlockerIds`, not `compareWpIds`: a target is an unvalidated string, so it may
+ * not be a grammatical stem, and the tree still has to print it.
  */
 function blockersOf(graph: WpGraph, id: string): string[] {
-  return graph.unmetDependencies(id).sort(compareWpIds);
+  return graph.unmetDependencies(id).sort(compareBlockerIds);
 }
 
 function treeRows(graph: WpGraph): JsonObject[] {
