@@ -640,13 +640,14 @@ function applyStatus(wp: Wp, status: string): Wp {
   return parseWp(wp.path);
 }
 
-function notReadyReason(graph: WpGraph, wp: Wp): string {
-  if (wp.status !== "todo") {
-    return `${wp.id} is ${wp.status ?? "missing a status"}, not todo`;
-  }
-  const unmet = [
+/**
+ * The `blocked_by` targets of a WP and its ancestors that have not resolved to
+ * `done`. Unknown targets count as unmet; `wp check` reports them separately.
+ */
+function unmetDependencies(graph: WpGraph, id: string): string[] {
+  return [
     ...new Set(
-      [wp.id, ...graph.ancestors(wp.id)]
+      [id, ...graph.ancestors(id)]
         .flatMap((ownerId) => graph.byId.get(ownerId)?.blockedBy ?? [])
         .filter(
           (dependency) =>
@@ -654,28 +655,23 @@ function notReadyReason(graph: WpGraph, wp: Wp): string {
         ),
     ),
   ];
-  if (unmet.length === 0) return `${wp.id} is not ready`;
-  return `${wp.id} is blocked by ${unmet.join(", ")}`;
 }
 
-function doingLeafOtherThan(graph: WpGraph, id: string): string | null {
-  return (
-    graph.orderedIds.find(
-      (other) =>
-        other !== id && graph.isLeaf(other) && graph.byId.get(other)?.status === "doing",
-    ) ?? null
-  );
-}
-
-/** Claim a leaf by writing `status: doing`. Re-starting the current claim is a no-op. */
+/**
+ * Start work on a leaf by writing `status: doing`. An unmet dependency is the
+ * only thing that stops it: the current status is irrelevant, so a `done` leaf
+ * reopens and any number of leaves may be `doing` at once. Re-starting the
+ * leaf that is already `doing` is a no-op.
+ */
 export function startWp(graph: WpGraph, id: string, force = false): Wp {
   const wp = requireLeaf(graph, id);
   if (wp.status === "doing") return wp;
 
   if (!force) {
-    const claimed = doingLeafOtherThan(graph, id);
-    if (claimed !== null) throw new TransitionError(`${claimed} is already doing`);
-    if (!graph.isReady(id)) throw new TransitionError(notReadyReason(graph, wp));
+    const blockers = unmetDependencies(graph, id);
+    if (blockers.length > 0) {
+      throw new TransitionError(`${id} is blocked by ${blockers.join(", ")}`);
+    }
   }
   return applyStatus(wp, "doing");
 }

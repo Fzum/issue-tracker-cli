@@ -220,10 +220,19 @@ build the graph first so they refuse a folder `wp check` would reject. Nothing
 new is stored: `doing` was already a valid status and the rollup already derived
 it, so this adds a writer, not a schema.
 
-Because only one agent works at a time, `wp start` refuses when another leaf is
-already `doing` — a claim check, not a lock, and cheap because a single scan is
-authoritative. `--force` is the escape hatch. The day agents run concurrently
-this guard is wrong and `owner` / `claimed_at` (still deferred) is the answer.
+An unmet `blocked_by` target is the only thing `wp start` refuses on. A first
+cut also refused when any other leaf was already `doing`, reading "one agent,
+one WP at a time" as a rule to enforce. That was wrong: it is a statement about
+how the human works, not an invariant of the tree, and enforcing it made two
+independent epics interfere for no reason. Dependencies are the one thing the
+tracker knows better than the caller, so they are the one thing it blocks on.
+`--force` overrides even that.
+
+Consequently the current status is not checked either — a `done` leaf reopens,
+and any number of leaves may be `doing`. Nothing downstream cares: `wp next`
+still offers only `todo` leaves, and the rollup still reports `doing` the moment
+one child is. Claims stay unmodelled; `owner` / `claimed_at` remain deferred
+until parallel agents make bare `doing` collide.
 
 Still deferred: `wp new`, `wp mv`, a `cancelled` status, relation types beyond
 `blocked_by`.

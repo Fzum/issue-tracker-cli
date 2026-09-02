@@ -862,16 +862,18 @@ describe("start", () => {
     expect(() => startWp(graph, "wp-m1")).toThrow("container");
   });
 
-  test("given another leaf already doing when a second is started then the collision is reported", () => {
+  test("given another leaf already doing when a second is started then both are doing", () => {
     // Given
     const fixture = new Fixture();
     fixture.givenWp("wp-m1", { status: "doing", description: "First" });
     fixture.givenWp("wp-m2", { description: "Second" });
-    const graph = fixture.givenGraph();
 
-    // When / Then
-    expect(() => startWp(graph, "wp-m2")).toThrow("wp-m1 is already doing");
-    expect(fixture.contentOf("wp-m2.md")).toContain("status: todo");
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m2");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: doing");
   });
 
   test("given a blocked leaf when started then the blocker is reported", () => {
@@ -902,20 +904,23 @@ describe("start", () => {
     expect(() => startWp(graph, "wp-m2e1")).toThrow("blocked by wp-m1");
   });
 
-  test("given a done leaf when started then its status is reported", () => {
+  test("given a done leaf when started then it is reopened as doing", () => {
     // Given
     const fixture = new Fixture();
     fixture.givenWp("wp-m1", { status: "done", description: "First" });
-    const graph = fixture.givenGraph();
 
-    // When / Then
-    expect(() => startWp(graph, "wp-m1")).toThrow("is done, not todo");
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m1");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1.md")).toContain("status: doing");
   });
 
   test("given a blocked leaf when started with force then its file records doing", () => {
     // Given
     const fixture = new Fixture();
-    fixture.givenWp("wp-m1", { status: "doing", description: "First" });
+    fixture.givenWp("wp-m1", { description: "First" });
     fixture.givenWp("wp-m2", { description: "Second", blockedBy: ["wp-m1"] });
 
     // When
@@ -924,6 +929,23 @@ describe("start", () => {
     // Then
     expect(started.status).toBe("doing");
     expect(fixture.contentOf("wp-m2.md")).toContain("status: doing");
+  });
+
+  test("given a doing story under one epic when a story under another is started then it succeeds", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Epic one" });
+    fixture.givenWp("wp-m1e1u1", { status: "doing", description: "Story one" });
+    fixture.givenWp("wp-m1e2", { status: null, description: "Epic two" });
+    fixture.givenWp("wp-m1e2u1", { description: "Story two" });
+
+    // When
+    const started = startWp(fixture.givenGraph(), "wp-m1e2u1");
+
+    // Then
+    expect(started.status).toBe("doing");
+    expect(fixture.contentOf("wp-m1e1u1.md")).toContain("status: doing");
   });
 
   test("given an unknown ID when started then an unknown work-package error is raised", () => {
