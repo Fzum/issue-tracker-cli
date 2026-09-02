@@ -18,7 +18,7 @@ progress reporting must fall out of the same files without additional schema.
 - Human-facing UI of any kind
 - Multi-project support, users, permissions, comments, attachments
 - History or audit trail beyond what git already gives
-- Any write path in the CLI (v1)
+- Any write path beyond `wp start` / `wp done` flipping a leaf's `status` (§6)
 
 ## 2. Layout
 
@@ -151,8 +151,9 @@ in that order; ties cannot occur because stems are unique.
 
 `issue-tracker-cli/wp.ts` — single-file TypeScript CLI for Bun 1.0+, with no
 runtime dependencies. From `issue-tracker-cli/`, run as `bun run wp <cmd>`,
-`bun wp.ts <cmd>`, or `./wp.ts <cmd>` via shebang. Read-only: it never modifies
-a file. Agents flip `status` with an ordinary file edit.
+`bun wp.ts <cmd>`, or `./wp.ts <cmd>` via shebang. Every command except
+`wp start` / `wp done` is read-only; those two rewrite exactly one line (§6.1).
+Agents may still flip `status` with an ordinary file edit.
 
 Commands operate on `./wps` by default; `--dir <path>` overrides.
 Every command accepts `--json` for machine consumption.
@@ -177,6 +178,40 @@ the progress view; it needs no schema of its own.
 
 Validates the folder (§7). Prints one line per problem as
 `<file>: <problem>`. Exits 1 if any problem was found, 0 if clean.
+
+### `wp start <id> [--force]`
+
+Claims a leaf by writing `status: doing`, then prints the `wp next` row. Guards,
+first failure wins:
+
+1. unknown id → exit 2
+2. already `doing` → prints the row, exits 0 (idempotent; re-running is safe)
+3. not a leaf → exit 2, `<id> is a container; only leaves carry status`
+4. another leaf is `doing` → exit 2, `<other> is already doing`
+5. not ready (§5) → exit 2, naming the unmet `blocked_by` targets, or the
+   current status when it is not `todo`
+
+`--force` skips 4 and 5 only. Guard 4 encodes the one-agent-one-WP rule (D9);
+it scans every leaf, so concurrent agents need `--force` until claims are
+modelled properly.
+
+### `wp done <id> [--force]`
+
+Releases a claimed leaf by writing `status: done`, then prints the row. Unknown
+id → exit 2; already `done` → prints and exits 0; not a leaf → exit 2; not
+currently `doing` → exit 2, `<id> is <status>, not doing; start it first`.
+`--force` skips the last check only.
+
+### 6.1 How the write works
+
+Both commands build the graph through the normal read path first, so they refuse
+to touch a directory that `wp check` would reject. The write then locates the
+frontmatter block the way the parser does, replaces the single `status:` line
+(preserving its line ending), and never inserts the field — a leaf missing
+`status` is not `ready`, so the guards reject it first. The result goes to a
+temporary file in the same directory and is `rename`d over the original, so a
+torn write cannot leave a corrupt WP. Body, comments, unknown keys, key order
+and CRLF endings all survive byte-for-byte.
 
 ### Exit codes
 
@@ -270,7 +305,6 @@ its absence:
 
 | Deferred | Add when |
 |---|---|
-| `wp start` / `wp done` writes | agents demonstrably mangle YAML in practice |
 | `owner` / `claimed_at` | enough parallel agents that bare `doing` collides |
 | `cancelled` status | the BA agent over-generates and scope cuts wedge the queue |
 | `wp new` / `wp mv` | renumbering on insert becomes a real cost |
@@ -298,6 +332,9 @@ Unit tests per group in §8, over a fixture folder:
 - query: rollup at each state, ancestor-blocking (rule 4), natural sort
   (`m2` before `m10`), empty ready queue
 - check: one test per rule in §7, plus a clean folder exiting 0
+- write: byte-for-byte preservation (extra keys, comments, CRLF, no trailing
+  newline), and refusal to insert a missing `status`
+- start/done: one test per guard in §6, plus `--force` overriding each
 - cli: exit codes, `--json` shape stability
 
 The suite uses Bun's built-in test runner and Given/When/Then test structure.
