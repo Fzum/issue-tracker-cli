@@ -1184,10 +1184,10 @@ describe("CLI transitions", () => {
     // Then
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      "wp-m1\tdoing\tMilestone\n" +
-        "  wp-m1e1\tdoing\tEpic\n" +
-        "    wp-m1e1u1\tdoing\tStory one\n" +
-        "    wp-m1e1u2\ttodo\tStory two\n",
+      "▶  Milestone        0/1  wp-m1\n" +
+        "▶  └─ Epic          0/2  wp-m1e1\n" +
+        "▶     ├─ Story one       wp-m1e1u1\n" +
+        "○     └─ Story two       wp-m1e1u2\n",
     );
   });
 

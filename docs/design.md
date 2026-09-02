@@ -197,6 +197,10 @@ are padded to the widest value in the output, so the ids line up. Padding is
 measured in terminal cells (`Bun.stringWidth`), not UTF-16 units, so CJK and
 emoji descriptions stay aligned. Lines never carry trailing whitespace.
 
+`Bun.stringWidth` landed in Bun 1.0.29, so that is the runtime floor recorded in
+`package.json` `engines`. `@types/bun` tracks `latest` independently, so `tsc`
+cannot catch an API the installed runtime lacks — only `bun test` can.
+
 | Element | Rule |
 |---|---|
 | `✔` / `▶` / `○` / `?` | resolved status `done` / `doing` / `todo` / anything else |

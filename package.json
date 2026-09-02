@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "bun": ">=1.0.29"
+  },
   "bin": {
     "wp": "./wp.ts"
   },

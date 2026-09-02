@@ -28,6 +28,11 @@ bun run wp --dir /path/to/project/wps check   # run the CLI (--dir is forwarded 
 ./wp.ts check                             # or via shebang, against ./wps
 ```
 
+Requires Bun >= 1.0.29 (`Bun.stringWidth`, used by `wp tree`); `package.json` `engines`
+records it. `@types/bun` is pinned to `latest`, so `typecheck` passes against a newer
+API surface than an older installed runtime actually has — `bun test` is what catches
+that gap, so never treat a green `typecheck` alone as verification.
+
 There is no build step and no lint config; `bun test` + `bun run typecheck` are the full
 verification gate. `bun run wp` only resolves from this directory — from anywhere else,
 invoke `wp.ts` by absolute path.
