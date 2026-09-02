@@ -42,8 +42,16 @@ issue-tracker-cli/
     render.ts
     tree.ts
     cli.ts
-  tests/
-    wp.test.ts
+  tests/           # one *.test.ts per concern
+    helpers.ts     # the shared Fixture — not a test file
+    frontmatter.test.ts
+    graph.test.ts
+    check.test.ts
+    store.test.ts
+    transitions.test.ts
+    tree.test.ts
+    cli.test.ts
+    cli-piped-output.test.ts
 wps/
   wp-m1.md
   wp-m1e1.md
@@ -439,20 +447,25 @@ its absence:
 
 ## 12. Test plan
 
-Unit tests per behaviour group (these mirror the `describe` blocks in
-`tests/wp.test.ts`, which are grouped by behaviour rather than by §8 module), over a
-fixture folder:
+Unit tests per behaviour group, over a fixture folder. Each group is a `describe` block;
+`tests/` holds one file per concern, and the file each group lives in is named here:
 
-- parse: valid leaf, valid container, both `blocked_by` forms, each parse error
-- graph: parent/children derivation, `blocks` inversion, cycle detection
-  (self-edge, 2-cycle, longer cycle)
-- query: rollup at each state, ancestor-blocking (rule 4), natural sort
-  (`m2` before `m10`), empty ready queue
-- check: one test per rule in §7, plus a clean folder exiting 0
-- write: byte-for-byte preservation (extra keys, comments, CRLF, no trailing
-  newline), and refusal to insert a missing `status`
-- start/done: one test per guard in §6, plus `--force` overriding each
-- cli: exit codes, `--json` shape stability
+- parse (`tests/frontmatter.test.ts`): valid leaf, valid container, both `blocked_by`
+  forms, each parse error
+- graph (`tests/graph.test.ts`): parent/children derivation, `blocks` inversion, cycle
+  detection (self-edge, 2-cycle, longer cycle)
+- query (`tests/graph.test.ts`): rollup at each state, ancestor-blocking (rule 4),
+  natural sort (`m2` before `m10`), empty ready queue
+- check (`tests/check.test.ts`): one test per rule in §7, plus a clean folder exiting 0
+- write (`tests/store.test.ts`): byte-for-byte preservation (extra keys, comments, CRLF,
+  no trailing newline), and refusal to insert a missing `status`
+- start/done (`tests/transitions.test.ts`): one test per guard in §6, plus `--force`
+  overriding each
+- tree (`tests/tree.test.ts`): glyphs, connectors, rollup counts, unmet-blocker lists,
+  column alignment under double-width text, `tree --json`
+- cli (`tests/cli.test.ts`): exit codes, `--json` shape stability
+- cli piped output (`tests/cli-piped-output.test.ts`): output past the pipe buffer is not
+  truncated, and a reader that closes early does not change the exit code
 
 The suite uses Bun's built-in test runner and Given/When/Then test structure.
 Run it from `issue-tracker-cli/` with `bun test`.

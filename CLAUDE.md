@@ -10,7 +10,7 @@ This is a standalone repository. Everything it needs is inside it:
 |---|---|
 | `wp.ts` | Executable entry point and the single public barrel (~45 lines). No logic beyond the process contract: the exit code and the stdout EPIPE guard. |
 | `src/` | The CLI itself — 11 flat modules, one technical concern each, zero runtime dependencies |
-| `tests/wp.test.ts` | The whole suite — Given/When/Then, real files in temp dirs |
+| `tests/` | The suite — one `*.test.ts` per concern plus the shared `helpers.ts` fixture. Given/When/Then, real files in temp dirs |
 | `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit codes |
 | `docs/vision.md` | Raw brainstorming plus the decision log D1–D11, with the rationale for every constraint below |
 | `docs/execution-model.md` | How an orchestrator runs the queue with parallel agents: the wave loop, worktree isolation, serial merge |
@@ -103,8 +103,8 @@ The stdout `EPIPE` handler next to it is **load-bearing, not defensive**.
 early (`wp tree | head`, quitting `less`); without the handler it becomes uncaught,
 so a clean run exits 1 with a crash dump — and exit 1 here *means* "check found
 problems". It fires at flush time, so a `try`/`catch` around `main` cannot catch it.
-Both halves are pinned by `describe("CLI piped output")` in the test suite; those tests
-need output past the ~64 KiB pipe buffer, so keep their fixtures large.
+Both halves are pinned by `tests/cli-piped-output.test.ts`; those tests need output past
+the ~64 KiB pipe buffer, so keep their fixtures large.
 
 The write path branches off the same graph: `startWp` / `finishWp` guard the
 transition, then `setStatus` rewrites one line.
@@ -190,7 +190,7 @@ assert on it directly. `src/render.ts` owns the `show` / `next` / `check` payloa
   public surface explicit and reviewable in one file, and it is why rule 4 above exists.
   Adding a `src/` export does **not** make it public; add it to `wp.ts` deliberately.
 - Tests are Given/When/Then in both name and body (`// Given`, `// When`, `// Then`
-  comment markers), built on the `Fixture` class in `tests/wp.test.ts` which writes real
+  comment markers), built on the `Fixture` class in `tests/helpers.ts` which writes real
   files to a temp dir; CLI tests spawn `wp.ts` as a subprocess and assert exit codes, so
   `wp.ts` must remain the runnable entry point.
 - Add a test per spec rule when touching `check` — the suite already has one per rule.
@@ -199,6 +199,45 @@ assert on it directly. `src/render.ts` owns the `show` / `next` / `check` payloa
   Match the existing `?? ""` / `?? []` idiom rather than adding non-null assertions.
   `include` covers `wp.ts`, `src/**/*.ts` and `tests/**/*.ts` — a new module outside
   those globs escapes `typecheck` entirely and gives a false green.
+
+### The test layout
+
+One file per concern, mirroring `src/`. Put a new test in the file that owns the behaviour
+it pins, not the module it happens to call through:
+
+| Test file | Pins |
+|---|---|
+| `tests/frontmatter.test.ts` | Invariant 7, the YAML subset — through `parseWp`, the only path a real file takes into the parser |
+| `tests/graph.test.ts` | Invariants 3, 4, 5: parent / children / type, inverted `blocks`, cycles, container rollup, readiness |
+| `tests/check.test.ts` | One test per `wp check` rule, plus the clean folder |
+| `tests/store.test.ts` | Invariant 6's writer: `setStatus` replaces one line and preserves comments, unknown keys, CRLF and a missing final newline |
+| `tests/transitions.test.ts` | The `start` / `done` guard policy and what `--force` overrides |
+| `tests/tree.test.ts` | The glyph tree: connectors, rollup counts, blocker lists, column alignment, `tree --json` |
+| `tests/cli.test.ts` | argv grammar, printed rows, JSON shapes, exit codes |
+| `tests/cli-piped-output.test.ts` | The `process.exitCode` + EPIPE pair, on output past the pipe buffer |
+| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 8 files, not 9. |
+
+Every test file registers `afterEach(cleanupFixtures)` itself. Do **not** move that hook
+into `tests/helpers.ts`: Bun evaluates a helper module once per process, so a hook
+registered there attaches only to whichever test file imported it first, and every other
+file silently leaks its temp directories. That was measured, not assumed.
+
+Four modules have no file of their own, and two of them have real holes. Measured by
+mutation, not assumed:
+
+- `src/ids.ts` — covered. The ordering tests in `tests/graph.test.ts` and
+  `tests/tree.test.ts` pin `compareWpIds` and `compareBlockerIds`.
+- `src/model.ts` — covered. Each error class is asserted by the file that throws it.
+- `src/json.ts` — **not covered.** Every `--json` test calls `JSON.parse`, which throws
+  key order away, so neither the recursive key sort nor the non-ASCII escaping is asserted
+  anywhere. Replacing `jsonText`'s body with a plain `JSON.stringify` leaves 93/93 green.
+- `src/render.ts` — **half covered.** `show` is only ever run with `--json`; the one
+  plain-text `show` call asserts an unknown-ID failure. Making the plain-text branch
+  return a constant leaves 93/93 green, so display order, the `compareText`-sorted extra
+  keys and the verbatim body append have no test at all.
+
+Both holes predate the split — the test bodies are unchanged — and it only made them
+visible. Close them by asserting raw stdout, not by adding a file for its own sake.
 
 ### If a module outgrows its file
 
