@@ -293,8 +293,15 @@ blocker list — reachable by `wp start --force` or a hand edit, and worth
 reporting rather than hiding.
 
 `--json` gains one key per row: `unmet_blockers`, the same list. Rows remain one
-flat record per work package with `id`, `status`, `short_description`, `depth`
-and `unmet_blockers`, in `compareWpIds` order.
+flat record per work package with `id`, `parent`, `status`, `short_description`,
+`depth` and `unmet_blockers`, in `compareWpIds` order.
+
+`parent` is `parentId(id)` — `null` at a root, and it may name a work package
+that has no file, which is the state `wp check` reports and this tree still
+renders. Like `depth` it is re-derived for the wire and never stored, so
+invariant 3 holds; it is on the wire because a consumer cannot re-derive it
+safely (`"wp-m10e1".startsWith("wp-m1")` is `true`). Added for the board —
+see `board.md` §3.
 
 ### `wp check`
 

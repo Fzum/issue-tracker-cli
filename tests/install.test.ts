@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -17,6 +19,15 @@ const INSTALL_PATH = join(PROJECT_ROOT, "install.sh");
 const TEMPLATE_ROLE = readFileSync(join(PROJECT_ROOT, "prompts", "worker.md"), "utf8");
 const temporaryDirectories: string[] = [];
 
+/** Every file install.sh refuses to run without, in the order its loop checks them. */
+const CLONE_FILES = [
+  "wp.ts",
+  "orchestrate.ts",
+  "prompts/worker.md",
+  "board.ts",
+  "board.html",
+] as const;
+
 interface InstallResult {
   readonly exitCode: number;
   readonly stdout: string;
@@ -31,16 +42,17 @@ class ProjectFixture {
   readonly root: string;
   readonly home: string;
   readonly binDirectory: string;
+  private readonly base: string;
 
   constructor() {
-    const base = mkdtempSync(join(tmpdir(), "install-test-"));
-    temporaryDirectories.push(base);
-    this.root = join(base, "project");
+    this.base = mkdtempSync(join(tmpdir(), "install-test-"));
+    temporaryDirectories.push(this.base);
+    this.root = join(this.base, "project");
     mkdirSync(this.root);
-    this.home = join(base, "home");
+    this.home = join(this.base, "home");
     mkdirSync(this.home);
     // Deliberately not created: the script has to create it itself.
-    this.binDirectory = join(base, "bin");
+    this.binDirectory = join(this.base, "bin");
   }
 
   givenGitRepository(): void {
@@ -75,6 +87,31 @@ class ProjectFixture {
     return existsSync(path) ? readlinkSync(path) : "";
   }
 
+  /**
+   * A directory shaped like the clone but missing one required file, holding a
+   * copy of install.sh. Returns that copy's path, to run instead of the real
+   * script: `$0` is how install.sh finds its tools, so a broken clone can only
+   * be faked by moving the script into one.
+   *
+   * Stand-ins, not the real files — the refusal loop tests for existence and
+   * runs before anything is read or executed, so their contents cannot matter.
+   */
+  givenCloneWithout(missing: string): string {
+    const clone = join(this.base, "clone");
+    for (const required of CLONE_FILES) {
+      if (required === missing) continue;
+      const path = join(clone, required);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "stand-in\n", "utf8");
+    }
+    const script = join(clone, "install.sh");
+    copyFileSync(INSTALL_PATH, script);
+    // A copy that lost its executable bit would fail before the refusal, and
+    // exit 2 on the wrong grounds is exactly the false green this test is for.
+    chmodSync(script, 0o755);
+    return script;
+  }
+
   runInstall(...arguments_: string[]): InstallResult {
     return this.runInstallWith(
       { PATH: process.env["PATH"] ?? "", HOME: this.home, WP_BIN_DIR: this.binDirectory },
@@ -86,8 +123,16 @@ class ProjectFixture {
     environment: Record<string, string>,
     ...arguments_: string[]
   ): InstallResult {
+    return this.runScript(INSTALL_PATH, environment, ...arguments_);
+  }
+
+  runScript(
+    script: string,
+    environment: Record<string, string>,
+    ...arguments_: string[]
+  ): InstallResult {
     const result = Bun.spawnSync({
-      cmd: [INSTALL_PATH, ...arguments_],
+      cmd: [script, ...arguments_],
       cwd: this.root,
       env: environment,
       stdout: "pipe",
@@ -113,7 +158,7 @@ function occurrences(haystack: string, needle: string): number {
 }
 
 describe("installing into a fresh project", () => {
-  test("given a git repository with nothing installed when install runs then the queue, the role prompt, the ignore rule and both links appear", () => {
+  test("given a git repository with nothing installed when install runs then the queue, the role prompt, the ignore rule and all three links appear", () => {
     // Given
     const fixture = new ProjectFixture();
     fixture.givenGitRepository();
@@ -128,6 +173,7 @@ describe("installing into a fresh project", () => {
     expect(fixture.contentOf(".gitignore")).toContain("log/");
     expect(fixture.linkTarget("wp")).toBe(join(PROJECT_ROOT, "wp.ts"));
     expect(fixture.linkTarget("orchestrate")).toBe(join(PROJECT_ROOT, "orchestrate.ts"));
+    expect(fixture.linkTarget("wp-board")).toBe(join(PROJECT_ROOT, "board.ts"));
     // The report names every change, so a reader can see what was touched.
     expect(result.stdout).toContain("+ wps/");
     expect(result.stdout).toContain("+ prompts/worker.md");
@@ -135,7 +181,7 @@ describe("installing into a fresh project", () => {
     expect(result.stdout).toContain("wp check: clean");
   });
 
-  test("given no WP_BIN_DIR when install runs then both commands are linked into $HOME/.local/bin", () => {
+  test("given no WP_BIN_DIR when install runs then all three commands are linked into $HOME/.local/bin", () => {
     // Given
     const fixture = new ProjectFixture();
     fixture.givenGitRepository();
@@ -153,6 +199,7 @@ describe("installing into a fresh project", () => {
     expect(fixture.linkTarget("orchestrate", defaultBin)).toBe(
       join(PROJECT_ROOT, "orchestrate.ts"),
     );
+    expect(fixture.linkTarget("wp-board", defaultBin)).toBe(join(PROJECT_ROOT, "board.ts"));
   });
 
   test("given a directory that is not a git repository when install runs then it warns and installs anyway", () => {
@@ -240,8 +287,12 @@ describe("running install twice", () => {
     expect(result.exitCode).toBe(0);
     expect(fixture.contentOf(".gitignore")).toBe(before);
     expect(fixture.linkTarget("wp")).toBe(join(PROJECT_ROOT, "wp.ts"));
+    expect(fixture.linkTarget("wp-board")).toBe(join(PROJECT_ROOT, "board.ts"));
     expect(result.stdout).toContain("= wps/");
     expect(result.stdout).not.toContain("+ wps/");
+    // `=`, not `!`: a link already pointing at our own board.ts is in place, not
+    // a foreign command to leave alone.
+    expect(result.stdout).toContain(`= ${join(fixture.binDirectory, "wp-board")}`);
   });
 
   test("given a wp link that points somewhere else when install runs then it is left alone", () => {
@@ -348,6 +399,30 @@ describe("refusals", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("bun");
     expect(fixture.has("wps")).toBe(false);
+  });
+
+  test("given a clone with no board.html when install runs then it refuses with exit 2 and writes nothing", () => {
+    // Given — the board's server present and its client absent, the one broken
+    // clone that would otherwise install cleanly and serve a blank page.
+    const fixture = new ProjectFixture();
+    fixture.givenGitRepository();
+    const script = fixture.givenCloneWithout("board.html");
+
+    // When
+    const result = fixture.runScript(script, {
+      PATH: process.env["PATH"] ?? "",
+      HOME: fixture.home,
+      WP_BIN_DIR: fixture.binDirectory,
+    });
+
+    // Then — "writes nothing" is the half that bites. Drop board.html from the
+    // required list and this still exits 2, because the stand-in wp.ts fails the
+    // smoke test at the *end*; only an untouched project proves it refused first.
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("board.html");
+    expect(fixture.has("wps")).toBe(false);
+    expect(fixture.has(".gitignore")).toBe(false);
+    expect(existsSync(fixture.binDirectory)).toBe(false);
   });
 
   test("given the issue-tracker-cli clone itself when install runs there then it refuses with exit 2", () => {

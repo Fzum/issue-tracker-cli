@@ -5,7 +5,7 @@
 # `wp` is a tool, like `git` or `jq`: cloned once, then pointed at a project
 # (decision D10 in docs/vision.md). This script does the pointing. It runs in
 # the *target* project and touches four things there — `wps/`,
-# `prompts/worker.md`, one line in `.gitignore`, and two symlinks in a bin
+# `prompts/worker.md`, one line in `.gitignore`, and three symlinks in a bin
 # directory — then prints the two steps a shell script cannot do itself.
 #
 #     cd /path/to/your/project
@@ -42,8 +42,8 @@ directory:
     /path/to/issue-tracker-cli/install.sh
 
 It creates wps/, copies prompts/worker.md when you have none, adds log/ to
-.gitignore, and links `wp` and `orchestrate` into $WP_BIN_DIR (default
-$HOME/.local/bin). Running it again is safe.
+.gitignore, and links `wp`, `orchestrate` and `wp-board` into $WP_BIN_DIR
+(default $HOME/.local/bin). Running it again is safe.
 
   --dry-run   report what would change and write nothing
   -h, --help  print this help
@@ -129,7 +129,10 @@ fi
 command -v bun >/dev/null 2>&1 ||
 	refuse 'bun is not on PATH. Install it from https://bun.sh, then run this again.'
 
-for required in wp.ts orchestrate.ts prompts/worker.md; do
+# board.html is listed beside board.ts because board.ts reads it from disk at
+# request time: a clone carrying only the server installs cleanly and then
+# serves a blank page, which surfaces hours later and nowhere near the cause.
+for required in wp.ts orchestrate.ts prompts/worker.md board.ts board.html; do
 	[ -f "$tools/$required" ] ||
 		refuse "$tools/$required not found — run this script from inside the issue-tracker-cli clone."
 done
@@ -195,6 +198,7 @@ fi
 
 link wp "$tools/wp.ts"
 link orchestrate "$tools/orchestrate.ts"
+link wp-board "$tools/board.ts"
 
 case ":$PATH:" in
 *":$bin_dir:"*) ;;
@@ -235,6 +239,7 @@ fi
 printf '  /plugin install %s\n' "$tools"
 printf '      in Claude Code, for the planning skills: /vision /architecture /breakdown\n'
 printf '  wp tree\n'
+printf '  wp-board --open\n'
 printf '  orchestrate --dry-run --verify "<the command that verifies your build>"\n'
 
 if [ "$attention" != 0 ]; then

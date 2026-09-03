@@ -68,6 +68,12 @@ function treeRows(graph: WpGraph, scope: string | null): JsonObject[] {
       short_description: wp.shortDescription,
       // Absolute, not relative to the scope: depth is a property of the id.
       depth: stemSegments(id).length,
+      // So is the parent, and it has to be on the wire because no consumer can
+      // re-derive it: `"wp-m10e1".startsWith("wp-m1")` is true, so a prefix match
+      // adopts a foreign milestone, and a depth stack over the row order silently
+      // reparents a WP whose parent file is missing — the state `wp check` reports
+      // and this tree still renders. A scope root names the parent it has no row for.
+      parent: parentId(id),
       unmet_blockers: blockersOf(graph, id),
     };
   });

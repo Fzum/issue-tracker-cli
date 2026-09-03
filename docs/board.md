@@ -1,7 +1,7 @@
 # The board — a live view of `wps/` in a browser
 
 Date: 2026-09-03
-Status: approved, not implemented
+Status: adopted
 Source: `design.md` (the CLI and its JSON), `execution-model.md` (what a run looks like)
 
 ## 1. What this answers

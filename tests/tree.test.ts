@@ -284,6 +284,7 @@ describe("tree", () => {
       {
         depth: 1,
         id: "wp-m1",
+        parent: null,
         short_description: "Broken",
         status: "todo",
         unmet_blockers: ["wp-m2", "aaa", "wp-zz9"],
@@ -291,6 +292,7 @@ describe("tree", () => {
       {
         depth: 1,
         id: "wp-m2",
+        parent: null,
         short_description: "Fine",
         status: "todo",
         unmet_blockers: [],
@@ -362,10 +364,18 @@ describe("tree", () => {
     // Then
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([
-      { depth: 1, id: "wp-m1", short_description: "Auth", status: "todo", unmet_blockers: [] },
+      {
+        depth: 1,
+        id: "wp-m1",
+        parent: null,
+        short_description: "Auth",
+        status: "todo",
+        unmet_blockers: [],
+      },
       {
         depth: 2,
         id: "wp-m1e1",
+        parent: "wp-m1",
         short_description: "Step one",
         status: "todo",
         unmet_blockers: ["wp-m1e2"],
@@ -373,6 +383,7 @@ describe("tree", () => {
       {
         depth: 2,
         id: "wp-m1e2",
+        parent: "wp-m1",
         short_description: "Step two",
         status: "todo",
         unmet_blockers: [],
@@ -406,6 +417,7 @@ describe("tree", () => {
       {
         depth: 1,
         id: "wp-m1",
+        parent: null,
         short_description: "Auth",
         status: "todo",
         unmet_blockers: ["wp-m2e2"],
@@ -415,6 +427,7 @@ describe("tree", () => {
         // would read `wp-m2e10, wp-m2e2`; `compareWpIds` puts `e2` before `e10`.
         depth: 2,
         id: "wp-m1e1",
+        parent: "wp-m1",
         short_description: "Endpoint",
         status: "todo",
         unmet_blockers: ["wp-m2e2", "wp-m2e10"],
@@ -422,6 +435,7 @@ describe("tree", () => {
       {
         depth: 1,
         id: "wp-m2",
+        parent: null,
         short_description: "Platform",
         status: "todo",
         unmet_blockers: [],
@@ -429,6 +443,7 @@ describe("tree", () => {
       {
         depth: 2,
         id: "wp-m2e2",
+        parent: "wp-m2",
         short_description: "Config",
         status: "todo",
         unmet_blockers: [],
@@ -436,7 +451,48 @@ describe("tree", () => {
       {
         depth: 2,
         id: "wp-m2e10",
+        parent: "wp-m2",
         short_description: "Later",
+        status: "todo",
+        unmet_blockers: [],
+      },
+    ]);
+  });
+
+  test("given a three-level tree when tree JSON runs then each row names its own parent", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Epic" });
+    fixture.givenWp("wp-m1e1u1", { status: "todo", description: "Story" });
+
+    // When
+    const result = fixture.runCli("tree", "--json", "--dir", fixture.directory);
+
+    // Then the root has no parent, and the story names the epic rather than the root
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        depth: 1,
+        id: "wp-m1",
+        parent: null,
+        short_description: "Milestone",
+        status: "todo",
+        unmet_blockers: [],
+      },
+      {
+        depth: 2,
+        id: "wp-m1e1",
+        parent: "wp-m1",
+        short_description: "Epic",
+        status: "todo",
+        unmet_blockers: [],
+      },
+      {
+        depth: 3,
+        id: "wp-m1e1u1",
+        parent: "wp-m1e1",
+        short_description: "Story",
         status: "todo",
         unmet_blockers: [],
       },
@@ -511,6 +567,7 @@ describe("tree --scope", () => {
         status: "doing",
         short_description: "Login epic",
         depth: 2,
+        parent: "wp-m1",
         unmet_blockers: [],
       },
       {
@@ -518,6 +575,7 @@ describe("tree --scope", () => {
         status: "done",
         short_description: "Password login",
         depth: 3,
+        parent: "wp-m1e1",
         unmet_blockers: [],
       },
       {
@@ -525,7 +583,48 @@ describe("tree --scope", () => {
         status: "todo",
         short_description: "Rate limit",
         depth: 3,
+        parent: "wp-m1e1",
         unmet_blockers: ["wp-m2"],
+      },
+    ]);
+  });
+
+  test("given a scope when tree JSON runs then the scope root still names the parent it has no row for", () => {
+    // Given
+    const fixture = new Fixture();
+    fixture.givenWp("wp-m1", { status: null, description: "Milestone" });
+    fixture.givenWp("wp-m1e1", { status: null, description: "Login epic" });
+    fixture.givenWp("wp-m1e1u1", { status: "todo", description: "Password login" });
+
+    // When
+    const result = fixture.runCli(
+      "tree",
+      "--json",
+      "--scope",
+      "wp-m1e1",
+      "--dir",
+      fixture.directory,
+    );
+
+    // Then `parent` stays absolute like `depth`: the re-rooted row keeps naming
+    // `wp-m1`, which the scope gives no row of its own
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      {
+        id: "wp-m1e1",
+        status: "todo",
+        short_description: "Login epic",
+        depth: 2,
+        parent: "wp-m1",
+        unmet_blockers: [],
+      },
+      {
+        id: "wp-m1e1u1",
+        status: "todo",
+        short_description: "Password login",
+        depth: 3,
+        parent: "wp-m1e1",
+        unmet_blockers: [],
       },
     ]);
   });
