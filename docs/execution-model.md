@@ -229,7 +229,8 @@ async function work(id: string) {
   const brief = await $`./wp.ts show ${id}`.text();     // description + body
   const prompt = `${ROLE}\n\n---\n\n${brief}`;          // role + task
 
-  await $`claude -p ${prompt} --permission-mode acceptEdits`.cwd(dir);
+  await $`claude -p ${prompt} --permission-mode acceptEdits \
+    --allowedTools ${"Bash(git:*)"} ${"Bash(bun:*)"}`.cwd(dir);
 }
 
 for (;;) {
@@ -252,8 +253,12 @@ Three notes:
 - Bun's `$` throws on a non-zero exit, so a red suite aborts before `wp done` — the
   §7 behaviour for free. In real code, wrap the integration body in try/catch to
   continue with the next branch.
-- `claude -p` is headless. `--permission-mode acceptEdits` stops it asking;
-  `--output-format json` if you want to parse what it did.
+- `claude -p` is headless. `--permission-mode acceptEdits` stops it asking about
+  edits — but only about edits, and there is nobody to ask about anything else,
+  so the gate and the commit need `--allowedTools "Bash(git:*)" "Bash(bun:*)"`
+  too. Without them an agent writes its file, is denied `git commit`, and leaves
+  an empty branch that §7 then refuses. `--output-format json` if you want to
+  parse what it did.
 - Each worktree also contains `wps/`, so "never touch the tracker files" is
   enforced by the role prompt rather than by the filesystem. An agent that ignores
   it shows up as a merge conflict — noisy, but not silent.

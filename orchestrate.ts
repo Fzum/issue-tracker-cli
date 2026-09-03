@@ -116,6 +116,31 @@ export function composePrompt(role: string, brief: string): string {
   return `${role.trimEnd()}${PROMPT_SEPARATOR}${brief.trimEnd()}\n`;
 }
 
+/**
+ * The `Bash` commands an agent is allowed to run, as `--allowedTools` rules.
+ *
+ * `--permission-mode acceptEdits` covers the edit tools and nothing else, and
+ * `claude -p` is headless: there is nobody to answer a prompt, so an unlisted
+ * `Bash` call is denied outright. An agent that cannot run `git commit` writes
+ * its file and leaves an empty branch — which `merge` then refuses, so the work
+ * is done, green in the worktree, and invisible. That failure was observed, not
+ * imagined; it cost a whole wave.
+ *
+ * So the two things the role prompt *requires* are granted here, and nothing
+ * else: git, and the project's own gate. The gate runs through `sh -c`, so it
+ * may be several commands joined by `&&`, `||`, `;` or a pipe — the first word
+ * of each segment is a program to allow.
+ */
+export function agentAllowedTools(verifyCommand: string): string[] {
+  const programs = verifyCommand
+    .split(/&&|\|\||[;|]/)
+    .map((segment) => segment.trim().split(/\s+/)[0] ?? "")
+    .filter((program) => program !== "");
+  // `git` is in no gate, but rule 6 of the role prompt ends with "commit on this
+  // branch", and rule 5 needs the gate. Those two are the whole list.
+  return [...new Set(["git", ...programs])].map((program) => `Bash(${program}:*)`);
+}
+
 /** One `wp tree --json` row, as much of it as the stall report reads. */
 interface TreeRow {
   readonly id: string;
@@ -496,6 +521,7 @@ export interface DriverConfig {
 export function createDriver(config: DriverConfig): Driver {
   const { repositoryRoot, wpsDirectory, role, verifyCommand, scope } = config;
   const logDirectory = join(repositoryRoot, LOG_DIRECTORY_NAME);
+  const allowedTools = agentAllowedTools(verifyCommand);
 
   const wp = wpRunner(repositoryRoot, wpsDirectory);
   const git = (arguments_: readonly string[], label: string): Promise<string> =>
@@ -528,7 +554,15 @@ export function createDriver(config: DriverConfig): Driver {
       mkdirSync(logDirectory, { recursive: true });
 
       const result = await execute(
-        [AGENT_COMMAND, "-p", prompt, "--permission-mode", "acceptEdits"],
+        [
+          AGENT_COMMAND,
+          "-p",
+          prompt,
+          "--permission-mode",
+          "acceptEdits",
+          "--allowedTools",
+          ...allowedTools,
+        ],
         worktreePath(repositoryRoot, id),
       );
       await Bun.write(logPath, `${result.stdout}${result.stderr}`);
@@ -735,6 +769,7 @@ async function printPlan(config: DriverConfig): Promise<void> {
   }
 
   printLine(`wave 1: ${queue.length} ready`);
+  const allowedTools = agentAllowedTools(verifyCommand).join(" ");
   for (const entry of queue) {
     const brief = await wp(["show", entry.id], `wp show ${entry.id}`);
     const prompt = composePrompt(role, brief);
@@ -744,7 +779,7 @@ async function printPlan(config: DriverConfig): Promise<void> {
       `    git worktree add ${worktreePath(repositoryRoot, entry.id)} -b ${branchName(entry.id)}`,
     );
     printLine(
-      `    ${AGENT_COMMAND} -p <prompt> --permission-mode acceptEdits  (${prompt.length} chars, log: ${LOG_DIRECTORY_NAME}/${entry.id}.log)`,
+      `    ${AGENT_COMMAND} -p <prompt> --permission-mode acceptEdits --allowedTools ${allowedTools}  (${prompt.length} chars, log: ${LOG_DIRECTORY_NAME}/${entry.id}.log)`,
     );
   }
   printLine("  then, one branch at a time:");

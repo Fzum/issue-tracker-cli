@@ -538,9 +538,11 @@ An empty queue is still a success, scoped or not: the exit code stays `0`.
 - `doing` is not a lock. One orchestrator handing out distinct IDs cannot hand
   the same ID out twice, so two orchestrators at once is the unsupported case.
 - Agents are spawned with `--permission-mode acceptEdits`, which covers file
-  edits only. Running the gate and committing are `Bash`, so `Bash` must be
-  allowed in your Claude Code settings — otherwise an agent edits, never commits,
-  and its empty branch is refused at merge time.
+  edits only, plus `--allowedTools` for the `Bash` they cannot work without: git,
+  and every program named in your `--verify` command. Nothing else is granted, so
+  an agent that reaches for an unlisted command is denied — headless `claude -p`
+  has nobody to ask — and stalls without committing. Widen `--verify`, or run the
+  wave in a session where those commands are allowed.
 - Cleanup is `git worktree remove --force`. By then the work is merged and green,
   so anything left in the worktree is junk; without `--force`, one stray file
   would keep the worktree and block that ID from ever running again.
