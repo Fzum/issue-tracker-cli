@@ -11,15 +11,16 @@ answers it; `wp start` / `wp done` let the agent record the answer.
 |---|---|
 | `wp.ts` | The tracker. Ask what is ready, claim it, finish it. Implementation in `src/`. |
 | `orchestrate.ts` | The loop. Hands every ready work package to its own agent in its own git worktree, then merges the branches back one at a time. |
+| `board.ts` | The board. A live view of `wps/` in a browser tab you leave open on a second screen, answering "what is happening right now, and how far along am I?". Reads only. |
 
-Both are tools, like `git` or `jq`: installed once, then pointed at a project.
-They hold no work of their own. A project brings three things — its own `wps/`,
-a `prompts/worker.md`, and a command that verifies its build.
+All three are tools, like `git` or `jq`: installed once, then pointed at a
+project. They hold no work of their own. A project brings three things — its own
+`wps/`, a `prompts/worker.md`, and a command that verifies its build.
 
 ## Install
 
-Clone it once. There is no build step and no runtime dependency, so `wp.ts` and
-`orchestrate.ts` run straight from disk.
+Clone it once. There is no build step and no runtime dependency, so `wp.ts`,
+`orchestrate.ts` and `board.ts` run straight from disk.
 
 ```sh
 git clone https://github.com/Fzum/issue-tracker-cli.git ~/tools/issue-tracker-cli
@@ -37,12 +38,14 @@ issue-tracker-cli -> /home/you/projects/my-thing
   + log/ in .gitignore
   + /home/you/.local/bin/wp -> /home/you/tools/issue-tracker-cli/wp.ts
   + /home/you/.local/bin/orchestrate -> /home/you/tools/issue-tracker-cli/orchestrate.ts
+  + /home/you/.local/bin/wp-board -> /home/you/tools/issue-tracker-cli/board.ts
   = wp check: clean
 
 Next:
   /plugin install /home/you/tools/issue-tracker-cli
       in Claude Code, for the planning skills: /vision /architecture /breakdown
   wp tree
+  wp-board --open
   orchestrate --dry-run --verify "<the command that verifies your build>"
 ```
 
@@ -61,7 +64,7 @@ and every step skips itself when it is already done. So running it again after a
 |---|---|
 | `--dry-run` | Report the same lines and write nothing. |
 | `-h`, `--help` | Print the built-in help. |
-| `WP_BIN_DIR` | Where the two symlinks go. Default `$HOME/.local/bin`. |
+| `WP_BIN_DIR` | Where the three symlinks go. Default `$HOME/.local/bin`. |
 
 | Code | Meaning |
 |---|---|
@@ -71,13 +74,14 @@ and every step skips itself when it is already done. So running it again after a
 
 ### Without the installer
 
-The installer only creates files and symlinks. Both entry points work by
+The installer only creates files and symlinks. Every entry point works by
 absolute path with nothing installed at all:
 
 ```sh
 # From a project that has a wps/ directory:
 /path/to/issue-tracker-cli/wp.ts next
 /path/to/issue-tracker-cli/orchestrate.ts --dry-run
+/path/to/issue-tracker-cli/board.ts --open
 
 # Or from the clone, pointing at the work packages:
 bun run wp --dir /path/to/project/wps next
@@ -85,7 +89,8 @@ bun run wp --dir /path/to/project/wps next
 
 `bun run wp` only resolves from the clone. From anywhere else, call `wp.ts` by
 absolute path. `orchestrate.ts` always runs in the project whose queue it
-drains, because that is the git repository it merges into.
+drains, because that is the git repository it merges into; `board.ts` runs there
+too, because it reads `./wps` and puts that directory's name in the header.
 
 ## Quick start
 
@@ -291,6 +296,7 @@ $ wp tree --json
   {
     "depth": 1,
     "id": "wp-m1",
+    "parent": null,
     "short_description": "Ship the CLI",
     "status": "doing",
     "unmet_blockers": []
@@ -298,6 +304,7 @@ $ wp tree --json
   {
     "depth": 2,
     "id": "wp-m1e1",
+    "parent": "wp-m1",
     "short_description": "Parse frontmatter",
     "status": "done",
     "unmet_blockers": []
@@ -305,6 +312,7 @@ $ wp tree --json
   {
     "depth": 2,
     "id": "wp-m1e2",
+    "parent": "wp-m1",
     "short_description": "Build the graph",
     "status": "todo",
     "unmet_blockers": [
@@ -314,6 +322,7 @@ $ wp tree --json
   {
     "depth": 2,
     "id": "wp-m1e3",
+    "parent": "wp-m1",
     "short_description": "Print the tree",
     "status": "todo",
     "unmet_blockers": []
@@ -323,6 +332,12 @@ $ wp tree --json
 
 Container `status` in this output is the derived rollup, not a stored field.
 Here `wp-m1` reports `doing` because one child is `done` and two are `todo`.
+
+`parent` is the ID minus its last segment — `null` at a root, absolute like `depth`
+under `--scope`, and it may name a work package that has no file at all, which is
+what `wp check` reports as an orphan. It is on the wire because no consumer can
+re-derive it safely: `wp-m10e1` starts with `wp-m1`, so a prefix match would adopt
+a work package from another milestone.
 
 `unmet_blockers` is the same list the `⊘` line shows: the WP's own `blocked_by`
 plus every ancestor's, minus whatever is already `done`. It is what `wp start`
@@ -550,6 +565,94 @@ An empty queue is still a success, scoped or not: the exit code stays `0`.
 [`docs/execution-model.md`](docs/execution-model.md) is the full runbook, with
 the reasoning and the list of what is deliberately not built.
 
+## The board
+
+`wp tree` prints the answer once. The board is the same answer kept current, in a
+browser tab you leave open on a second screen: **what is happening right now, and
+how far along am I?**
+
+```sh
+cd /path/to/project     # the repo with wps/ in it
+wp-board --open         # serving http://127.0.0.1:4400
+```
+
+```
+┌─ my-project ───────────────────────────────┐
+│ ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░  7/14 leaves  50%     │
+│ ✔ 7   ▶ 2   ● 3   ⊘ 2          updated 1s  │
+└────────────────────────────────────────────┘
+
+▾ ▣ wp-m1    Checkout milestone     5/5 ▓▓▓▓▓ 100%
+  ▾ ▣ wp-m1e1  Cart epic            2/2 ▓▓▓▓▓ 100%
+      ✔ wp-m1e1u1  Add an item to the cart
+      ✔ wp-m1e1u2  Remove an item from the cart
+▾ ▣ wp-m2    Fulfilment milestone   2/9 ▓▓░░░  22%
+  ▾ ▣ wp-m2e1  Inventory epic       1/3 ▓▓░░░  33%
+      ✔ wp-m2e1u1  Model stock levels
+      ▶ wp-m2e1u2  Reserve stock when an order is pla…
+      ⊘ wp-m2e1u3  Release stock   ← wp-m2e1u2
+```
+
+It only reads. There is no click-to-start and no click-to-done: `wp start` and
+`wp done` remain the only write path. It binds `127.0.0.1` and has no password,
+because it has no reachable surface to protect.
+
+| Option | Meaning |
+|---|---|
+| `--dir PATH` | Work-package directory, forwarded to `wp`. Default `./wps`. |
+| `--port N` | Port to listen on, loopback only. Default `4400`. |
+| `--open` | Open the default browser at startup. |
+| `-h`, `--help` | Print the built-in help. |
+
+Exit `2` is a usage error or a port already in use, and `0` only ever comes from
+`--help`: a board that starts serving runs until you interrupt it and then exits
+on the signal that stopped it, `130` for Ctrl-C. There is no exit `1`, because a
+tree that cannot be read is something the page shows you, not a verdict about the
+queue.
+
+Five states, one more than the CLI can express — plus `?`, which is the absence
+of one rather than a sixth:
+
+| Glyph | State | Meaning |
+|---|---|---|
+| `▣` | container | Has children, so it carries no status of its own — just a bar. |
+| `✔` | done | Finished. |
+| `▶` | doing | Claimed, an agent is on it now. The only thing on the page that moves. |
+| `●` | ready | `todo`, with nothing left in its way. |
+| `⊘` | blocked | `todo`, waiting on whatever `←` names. |
+| `?` | invalid | No `status`, or not one of the three. `wp check` says why. |
+
+`ready` is the state the CLI has no glyph for, and it is the reason the board is
+worth running: it is exactly what `wp next` would hand out, so the board shows
+what is about to happen as well as what is happening.
+
+Two gestures, and no more. The chevron on a container folds it away, and the fold
+survives a reload. Clicking a leaf opens a strip beneath it with the untruncated
+description and every unmet blocker, each carrying the glyph of its own row — so
+you can see whether the thing you are waiting on is itself running or itself
+blocked. Only *unmet* blockers appear; a dependency that is already `done` is not
+in your way and is not listed.
+
+**The bars count leaves at any depth, so the board and `wp tree` disagree on
+purpose.** `wp tree` counts direct children: a milestone of three epics prints
+`0/3` with eight of its nine stories done. The board says `2/9`. Leaves are the
+only rows that carry work, so they are the only sound unit for a progress bar —
+this is not a bug to report. `doing` fills neither half of a bar; the state counts
+in the header carry the rest.
+
+The page never blanks. Agents write these files while you are watching, so
+catching one half-written is a normal event: the poll fails, the last good tree
+stays on screen under a banner carrying `wp`'s own message, and the age in the
+header keeps climbing, so a tree that stays stale is visibly stale. It usually
+clears itself on the next poll.
+
+There is no watcher and no WebSocket. The tab polls once a second and the server
+rescans by spawning `wp tree --json`; a hidden tab stops polling altogether and
+fetches once the moment you come back to it.
+
+[`docs/board.md`](docs/board.md) is the design, with the reasoning and the list of
+what is deliberately not built.
+
 ## The file format
 
 One markdown file per work package, in the work-package directory:
@@ -605,8 +708,11 @@ bun run typecheck                   # tsc --noEmit
 `bun test` plus `bun run typecheck` are the whole verification gate. There is
 no build step and no linter. Tests are Given/When/Then in both name and body,
 and write real files to temp dirs. `tests/` holds one file per concern for the
-tracker, plus `tests/orchestrate.test.ts` for the loop — the wave and merge order
-against a fake driver, and the command line against a throwaway git repository.
+tracker, plus one per entry point outside it: `tests/orchestrate.test.ts` for the
+loop — the wave and merge order against a fake driver, and the command line
+against a throwaway git repository — `tests/install.test.ts` for the installer,
+and `tests/board.test.ts` for the board, whose rules all live in one pure function
+so they can be checked without a browser.
 
 ## Docs
 
@@ -615,6 +721,8 @@ against a fake driver, and the command line against a throwaway git repository.
   codes.
 - [`docs/execution-model.md`](docs/execution-model.md) — the runbook the loop
   implements: the wave, worktree isolation, serial merge, failure handling.
+- [`docs/board.md`](docs/board.md) — the board's design: why it polls instead of
+  watching, the five states, the deep leaf counts, and the two gestures.
 - [`docs/vision.md`](docs/vision.md) — brainstorming plus the decision log
   D1–D11. Read it before questioning a constraint; most surprising choices are
   deliberate.

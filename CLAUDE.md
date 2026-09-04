@@ -12,11 +12,14 @@ This is a standalone repository. Everything it needs is inside it:
 | `src/` | The CLI itself — 11 flat modules, one technical concern each, zero runtime dependencies |
 | `orchestrate.ts` | The second entry point: the wave loop that drains a queue with parallel agents. Drives `wp.ts` as a subprocess; imports nothing from `src/` |
 | `prompts/worker.md` | The role half of every worker prompt. This copy is both this repo's own and the template other projects copy |
-| `install.sh` | The third entry point, and the only one that runs *outside* this repo: it points a target project at the two above. POSIX `sh`, no logic beyond create-if-absent and report |
+| `install.sh` | The third entry point, and the only one that runs *outside* this repo: it points a target project at the other three. POSIX `sh`, no logic beyond create-if-absent and report |
+| `board.ts` | The fourth entry point: a live, read-only view of `wps/` in a browser. Built like `orchestrate.ts` — drives `wp.ts` as a subprocess, imports nothing from `src/` |
+| `board.html` | The whole board client in one self-contained file: inline CSS, inline vanilla JS, no framework and no build step. `board.ts` reads it from disk beside itself |
 | `tests/` | The suite — one `*.test.ts` per concern plus the shared `helpers.ts` fixture. Given/When/Then, real files in temp dirs |
 | `docs/design.md` | The approved design: field reference, derivation rules, the 11 `wp check` rules, the `start`/`done` guards, exit codes |
 | `docs/vision.md` | Raw brainstorming plus the decision log D1–D11, with the rationale for every constraint below |
 | `docs/execution-model.md` | How an orchestrator runs the queue with parallel agents: the wave loop, worktree isolation, serial merge |
+| `docs/board.md` | The board's approved design: why it polls, the five states, the deep leaf counts, and what is deliberately not built |
 
 Read `docs/design.md` before changing CLI behaviour, and `docs/vision.md` before
 questioning a constraint — most surprising choices are deliberate and have a recorded
@@ -32,6 +35,7 @@ bun run typecheck                         # tsc --noEmit
 bun run wp --dir /path/to/project/wps check   # run the CLI (--dir is forwarded by bun)
 ./wp.ts check                             # or via shebang, against ./wps
 ./orchestrate.ts --dry-run                # what the next wave would do; spawns nothing
+./board.ts --open                         # the live board, on http://127.0.0.1:4400
 ./install.sh --dry-run                    # from a *target* project; refuses to run here
 ```
 
@@ -239,6 +243,64 @@ in an existing `wps/`, `2` refused. The two steps it only *prints* — `/plugin 
 and the `--verify` command — are deliberate: a slash command is not a shell command, and
 the gate is the project's choice per D10.
 
+### The board
+
+`board.ts` and `board.html` implement `docs/board.md`. Read that document before changing
+either; every choice below is recorded there with a reason.
+
+It is the **fourth entry point, and a reader only**: no route writes, so invariant 6
+stands. Like `orchestrate.ts` it drives `wp.ts` as a subprocess and imports nothing from
+`src/`, so `tree --json` is the contract between them, not a function signature.
+
+One seam carries the design: **`boardState(rows)`, one exported pure function**, holds
+every rule of §3–§5 — container detection, the five states, the deep leaf counts, the
+summary, the `hash`. It touches no filesystem, no network and no clock, which is what
+makes it testable against literal arrays and what leaves the client, which nothing here
+can test, with nothing but rendering. Add a rule there, never in the route and never in
+`board.html`. `project` — the basename of the working directory — is the one payload field
+the route adds instead, so `boardState` stays pure; being a constant, it does not defeat
+`hash` the way a timestamp would.
+
+Load-bearing behaviour:
+
+1. **A container is an id some row names as its `parent`** — never a prefix of the id
+   string (`"wp-m10e1".startsWith("wp-m1")` is `true`), and never the row order, which a
+   missing parent file silently shifts. A `parent` naming an id with no row of its own
+   becomes `null`, so that row renders as a root; dropping it is the one failure §3 exists
+   to prevent, because a vanished work package looks like nothing at all.
+2. **`done` and `doing` outrank blocked**, inherited from `statusGlyph` in `src/tree.ts`
+   and it must not drift from it, or the board and the tree disagree about one file.
+   `unmet_blockers` is the source, never the raw `blocked_by`.
+3. **Every bar counts leaf descendants at any depth**, where `wp tree` counts direct
+   children. That divergence is deliberate (§5) and will eventually be reported as a bug;
+   do not "fix" it into agreement.
+4. **It polls, and there is no watcher.** `fs.watch` fires while an agent is halfway
+   through writing a file, where a poll either catches a valid tree or catches an error;
+   a restarted server also needs no reconnect logic, and there is no debounce to tune.
+   One second of latency is invisible against agents that take minutes.
+5. **The payload carries no timestamp**, deliberately. `hash` is what lets the client skip
+   a re-render and therefore skip destroying DOM the user is mid-scroll in, and a
+   `generated_at` would change on every poll and defeat it entirely. The age in the header
+   is the client timing its own last successful poll.
+6. **`ok: false` is served with HTTP 200 and must never blank the page.** A half-written
+   file is a normal event while agents work, so the client keeps the last good tree under
+   a banner: a blank page reads as "everything vanished", a banner over a stale tree reads
+   as "one file is broken right now", which is the truth and usually clears itself.
+
+Two repository traps, both invisible when hit:
+
+- **`tsconfig.json`'s `include` must list `board.ts`.** A root module outside those globs
+  escapes `typecheck` entirely and reports a false green.
+- **The four module-boundary greps scope to `wp.ts src/`.** `board.ts` legitimately
+  touches `process.*`, `Bun.serve`, `Bun.spawn` and reads `board.html` from disk, exactly
+  as `orchestrate.ts` legitimately touches its own three. The exemption is written down
+  here and in `scripts/check-boundaries.sh` because nothing in the greps shows it, and a
+  reader who cannot see why a root module is unchecked "fixes" it by widening the scope.
+  No `src/` module may import `board.ts`.
+
+`board.ts` ends with `process.exitCode = await main()` and the same EPIPE guard as
+`wp.ts`, for the same two reasons.
+
 ### The load-bearing invariants
 
 Changes that violate these contradict the design, not just the code:
@@ -276,7 +338,7 @@ Which module owns each invariant — change **every** listed owner together:
 |---|---|
 | 1 | `src/ids.ts` (grammar + ordering) and `src/store.ts` (path → ID, and the only `STEM_PATTERN` test; `parseWp` deliberately does not validate the stem) |
 | 2 | `src/model.ts` (`Wp`'s getters), `src/frontmatter.ts` (unknown keys preserved), `src/store.ts` (`blocked_by ??= []`) |
-| 3 | `src/graph.ts` (`subtree`) and `src/ids.ts` (`parentId` *is* the parent derivation, `isWithin` the subtree one); `src/render.ts` / `src/tree.ts` re-derive type and depth for the wire |
+| 3 | `src/graph.ts` (`subtree`) and `src/ids.ts` (`parentId` *is* the parent derivation, `isWithin` the subtree one); `src/render.ts` / `src/tree.ts` re-derive type, depth and `parent` for the wire — a re-derivation each time, never a stored field |
 | 4 | `src/graph.ts`, enforced by `src/check.ts` and `src/transitions.ts` |
 | 5 | **Two implementations with inverted polarity, both in `src/graph.ts`:** `isReady` (yes/no) and `unmetDependencies` (names the blockers). Change both. Two readers depend on that equivalence: `src/transitions.ts` lists the blockers in the `wp start` refusal, `src/tree.ts` prints them after `⊘`. |
 | 6 | `src/store.ts` (`setStatus`, the writer) and `src/transitions.ts` (the guards) |
@@ -323,6 +385,13 @@ escapes non-ASCII. The shape is a stability contract for agent consumers — CLI
 assert on it directly. `src/render.ts` owns the `show` / `next` / `check` payload shapes,
 `src/tree.ts` owns the `tree` rows, and nothing else may call `jsonText`.
 
+A `tree --json` row carries `parent` beside `depth`. Both are re-derived from the id for
+the wire (`parentId` in `src/ids.ts`), so the tracker still stores nothing and invariant 3
+is untouched — and `parent` is on the wire because no consumer may re-derive it: a prefix
+match adopts a foreign milestone, and `board.ts`, the consumer it was added for, must not
+know the stem grammar. It was additive, which is the only kind of change to these shapes
+that is safe.
+
 ## Conventions
 
 - Tests import from `../wp.ts`, the barrel — never from `src/` directly. That keeps the
@@ -336,8 +405,9 @@ assert on it directly. `src/render.ts` owns the `show` / `next` / `check` payloa
 - tsconfig runs `strict` plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`,
   so indexed reads need `?? fallback` and optional properties cannot take `undefined`.
   Match the existing `?? ""` / `?? []` idiom rather than adding non-null assertions.
-  `include` covers `wp.ts`, `orchestrate.ts`, `src/**/*.ts` and `tests/**/*.ts` — a new
-  module outside those globs escapes `typecheck` entirely and gives a false green.
+  `include` covers `wp.ts`, `orchestrate.ts`, `board.ts`, `src/**/*.ts` and
+  `tests/**/*.ts` — a new module outside those globs escapes `typecheck` entirely and
+  gives a false green.
 
 ### The test layout
 
@@ -356,12 +426,18 @@ it pins, not the module it happens to call through:
 | `tests/cli-piped-output.test.ts` | The `process.exitCode` + EPIPE pair, on output past the pipe buffer |
 | `tests/orchestrate.test.ts` | The loop, not the CLI: wave and merge order against `FakeDriver`, the real-git `Driver` against a throwaway repo, and `orchestrate.ts` as a subprocess |
 | `tests/install.test.ts` | `install.sh` as a subprocess: what a fresh project gains, that a second run changes nothing, and every refusal |
-| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 10 files, not 11. |
+| `tests/board.test.ts` | The board, not the CLI: every §3–§5 rule called straight into `boardState` on literal rows, plus `board.ts` as a subprocess on a test port driven with `fetch` — including §7's `ok: false` |
+| `tests/helpers.ts` | The shared `Fixture`, `expectProblem` and `cleanupFixtures`. Not a test file — `bun test` reports 11 files, not 12. |
 
-`tests/orchestrate.test.ts` and `tests/install.test.ts` are the two files outside that
-mirror, because `orchestrate.ts` and `install.sh` are outside `src/`. Each brings its own
-fixture rather than importing `tests/helpers.ts`: one needs a git repository, the other a
-target project plus a throwaway `HOME`, not a `wps/` directory.
+`tests/orchestrate.test.ts`, `tests/install.test.ts` and `tests/board.test.ts` are the
+three files outside that mirror, because `orchestrate.ts`, `install.sh` and `board.ts` are
+outside `src/`. Each brings its own fixture rather than importing `tests/helpers.ts`: one
+needs a git repository, one a target project plus a throwaway `HOME`, and one a server on
+a free port — not the bare `wps/` directory the shared `Fixture` builds.
+
+The browser is deliberately not tested: a headless browser in a repository with zero
+runtime dependencies would cost more than the coverage is worth, and keeping every rule in
+`boardState` is what makes that trade honest rather than lazy.
 
 `tests/install.test.ts` passes `env` to `Bun.spawnSync` on purpose, and always sets
 `HOME` and `WP_BIN_DIR` inside the temp directory. A test that inherited the real
@@ -396,6 +472,8 @@ Split further only when a file earns it, not pre-emptively:
 
 - `src/cli.ts` past ~250 lines → lift the argv grammar into `src/args.ts`.
 - `src/render.ts` past ~150 lines → split by command.
+- `board.html` when it next earns it → the CSS out first, into one file `board.ts` serves
+  beside the page, because that is the half with no logic in it.
 - `WpGraph.requireWp` / the three `unknown work-package ID` throws (`src/graph.ts`,
   `src/transitions.ts`, `src/render.ts`) could be deduplicated by dropping `private`;
   deliberately left alone as it buys no behaviour. Same for `ancestors` vs the tree's

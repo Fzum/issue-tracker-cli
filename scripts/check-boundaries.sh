@@ -8,8 +8,13 @@
 # `grep -r`, never `git grep`: a new file is untracked until it is staged, so
 # `git grep` passes vacuously on exactly the file you just added.
 #
-# Scope is `wp.ts src/` on purpose. `orchestrate.ts` is a second entry point,
-# not part of the CLI, and legitimately touches process.*, node:fs and Bun.spawn.
+# Scope is `wp.ts src/` on purpose. `orchestrate.ts` and `board.ts` are further
+# entry points, not part of the CLI: `orchestrate.ts` legitimately touches
+# process.*, node:fs and Bun.spawn, and `board.ts` those plus Bun.serve and a
+# read of board.html from disk beside itself. Both exemptions are written down
+# here because they are invisible in the greps below, and a reader who cannot see
+# why a root module is unchecked "fixes" it by widening the scope. The dependency
+# only ever runs outward: no src/ module may import either file.
 #
 # Run it the same way CI does:  bun run boundaries
 

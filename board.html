@@ -1,0 +1,753 @@
+<!doctype html>
+<!--
+  The board client: everything the browser needs, in one file — `docs/board.md` §8.
+
+  No framework, no bundler, no CDN and nothing to build. The rest of the repository
+  holds itself to zero runtime dependencies, and that is what keeps `board.ts`
+  runnable straight from a clone; `board.ts` reads this file off disk and serves it
+  at `/`.
+
+  It renders and nothing else. Every rule about what a row *means* lives in
+  `boardState` in `board.ts`, where it is unit-testable against literal arrays. The
+  browser half is deliberately not tested (§9), which is only honest as long as it
+  stays this dumb — so nothing here derives state, hierarchy or progress.
+
+  Read it in three passes, top to bottom:
+    1-4.  the stylesheet — palette, layout, the five states, motion
+    5.    the shell      — the static header skeleton a poll only fills in
+    6-10. the script     — vocabulary, nesting, rendering, the gestures, the poll
+
+  §12 expects this file to grow, and the rule is to split it when it earns the
+  split, CSS out first. The numbered sections are so that split is a cut, not a
+  rewrite.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- An empty data: icon, so the browser never asks for /favicon.ico. §6 allows two
+     routes and no more, so that request could only ever be a 404 — and a 404 in the
+     console of a tool you open to watch a run is noise that reads as a fault. -->
+<link rel="icon" href="data:,">
+<title>wp board</title>
+<style>
+/* ── 1. Palette — the CLI's own ANSI colours, so the two views agree on sight ──
+   `src/tree.ts` picks green (32) for done, amber (33) for doing, grey (90) for
+   todo, magenta (35) for blocked and red (31) for invalid. These are those five
+   read onto a dark background. Cyan is the one addition, for `ready` — the one
+   state the CLI has no name for. */
+:root {
+  --bg: #0b0e14;
+  --bg-hover: #161b22;
+  --fg: #c9d1d9;
+  --bright: #e6edf3;
+  --muted: #6e7681;
+  --rule: #30363d;
+  --rule-faint: #1b2028;
+  --done: #3fb950;
+  --doing: #e3b341;
+  --ready: #39c5cf;
+  --blocked: #c678dd;
+  --invalid: #f85149;
+  --flash: rgba(88, 166, 255, 0.24);
+}
+
+/* ── 2. Layout — a terminal, so: monospace, dark, one line per row ──────────── */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 1.2rem;
+  background: var(--bg);
+  color: var(--fg);
+  /* A system monospace stack. A webfont would mean a CDN, and a CDN is a
+     dependency this repository does not have. */
+  font: 13px/1.6 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+        "DejaVu Sans Mono", monospace;
+}
+
+/* The header box of §8's mockup: a border plus a title that interrupts it, which
+   is `┌─ my-project ─┐` without any box-drawing character whose width would have
+   to be recomputed on every resize. */
+.panel {
+  position: relative;
+  max-width: 74ch;
+  margin: 0 0 1.1rem;
+  padding: .6rem 1.2ch;
+  border: 1px solid var(--rule);
+}
+.panel-title {
+  position: absolute;
+  top: -.72em;
+  left: 1.4ch;
+  padding: 0 .6ch;
+  background: var(--bg);
+  color: var(--bright);
+}
+/* `pre`, here and on every row: the percentages are padded with spaces to line up
+   their columns, and the default white-space collapsing would eat that padding. */
+.panel-line {
+  display: flex;
+  gap: 1.6ch;
+  align-items: baseline;
+  white-space: pre;
+}
+.panel-counts { color: var(--muted); }
+.age {
+  margin-left: auto;
+  color: var(--muted);
+}
+/* §7: a tree that stays stale must be visibly stale rather than quietly wrong. */
+.age.stale { color: var(--doing); }
+
+.banner {
+  max-width: 110ch;
+  margin: 0 0 1rem;
+  padding: .5rem 1ch;
+  border: 1px solid var(--invalid);
+  border-left-width: 3px;
+  background: rgba(248, 81, 73, .08);
+  color: var(--invalid);
+  white-space: pre-wrap;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  gap: 1ch;
+  align-items: baseline;
+  padding: 1px 4px;
+  border-radius: 2px;
+  white-space: pre;
+}
+.row.clickable { cursor: pointer; }
+.row.clickable:hover { background-color: var(--bg-hover); }
+
+.chevron {
+  flex: 0 0 2ch;
+  color: var(--muted);
+}
+.chevron.clickable { cursor: pointer; }
+.glyph { flex: 0 0 1ch; }
+.id { flex: 0 0 auto; }
+/* One line per row is what keeps fifty work packages on one screen (§8.1). CSS
+   does the truncating, so it adapts to the window instead of guessing a column
+   count; the detail strip is how you read the rest. */
+.description {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.blockers {
+  flex: 0 1 auto;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--blocked);
+}
+/* Fixed-width and last in the row, so every bar on the page lands in the same
+   column however deep its row is nested. */
+.metrics {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 1ch;
+  color: var(--muted);
+}
+.bar { color: var(--done); }
+
+/* Indentation comes from nesting the DOM, which is also what makes a fold one
+   element to omit. */
+.children {
+  margin-left: 1.5ch;
+  padding-left: 2ch;
+  border-left: 1px solid var(--rule-faint);
+}
+
+.detail {
+  margin: 2px 0 6px 3.5ch;
+  padding: .3rem 1ch;
+  border-left: 2px solid var(--rule);
+  color: var(--muted);
+}
+.detail-description {
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+.detail-blocker {
+  display: flex;
+  gap: 1ch;
+  align-items: baseline;
+  margin-top: 3px;
+  white-space: pre;
+}
+/* Fixed width and blank after the first line, so the glyphs below the label stay
+   in the label's column. */
+.detail-label {
+  flex: 0 0 11ch;
+  color: var(--muted);
+}
+.empty { color: var(--muted); }
+
+/* ── 3. The five states (§4) ───────────────────────────────────────────────────
+   The state class colours the element it sits on, which is why it works equally
+   for a row, a header count and a blocker line inside a detail strip. */
+.state-done { color: var(--done); }
+.state-doing { color: var(--doing); }
+.state-ready { color: var(--ready); }
+.state-blocked { color: var(--blocked); }
+.state-invalid { color: var(--invalid); }
+.state-container { color: var(--fg); }
+.state-container .description { color: var(--bright); }
+/* Dimmed, per §4's table — and only on a row, so the header's `⊘` count stays
+   readable. A container carrying unmet blockers keeps the container colour: the
+   bar is the more useful thing in that row. */
+.row.state-blocked { opacity: .74; }
+
+/* ── 4. Motion, and its two jobs (§8.2) ───────────────────────────────────────
+   The marching border. Four gradient layers, one per edge, moved by
+   `background-position` — CSS only, no JavaScript. It is the only continuously
+   moving thing on the page, so "an agent is working on this one" is legible from
+   across a room.
+
+   It lives on `::before` and not on the row itself because the row's own
+   `animation` slot is taken by the flash below, and a row that has just started
+   is both: it changed state *to* `doing`. */
+.row.state-doing::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(90deg, var(--doing) 50%, transparent 0),
+    linear-gradient(90deg, var(--doing) 50%, transparent 0),
+    linear-gradient(0deg, var(--doing) 50%, transparent 0),
+    linear-gradient(0deg, var(--doing) 50%, transparent 0);
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-size: 10px 1px, 10px 1px, 1px 10px, 1px 10px;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  animation: march 700ms linear infinite;
+}
+/* Each layer travels along its own edge; the anchor of the other axis is kept as
+   it was declared, or a layer jumps to the opposite side mid-animation. */
+@keyframes march {
+  to { background-position: 10px 0, -10px 100%, 0 -10px, 100% 10px; }
+}
+
+/* The flash. A row whose state changed since the last poll fires this once, which
+   is what makes a landing wave read as movement rather than as numbers that
+   differ from the ones you last looked at. */
+.row.flash { animation: flash 900ms ease-out 1; }
+@keyframes flash {
+  from { background-color: var(--flash); }
+  to { background-color: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row.state-doing::before { animation: none; }
+  .row.flash { animation: flash-static 1.4s linear 1; }
+}
+/* The reduced-motion flash: a brief static highlight. It holds the colour and
+   then drops it, so there is a change to notice but nothing that fades. */
+@keyframes flash-static {
+  0%, 92% { background-color: var(--flash); }
+  100% { background-color: transparent; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── 5. The shell ─────────────────────────────────────────────────────────────
+     Static on purpose. A poll fills these nodes in rather than rebuilding them,
+     which is what lets `#age` keep ticking through polls that change nothing —
+     the payload carries no timestamp (§6), so that text node is the only thing
+     that knows how old the tree on screen is. -->
+<div class="panel">
+  <span class="panel-title" id="project">wp board</span>
+  <div class="panel-line">
+    <span class="bar" id="header-bar"></span>
+    <span id="header-ratio">0/0 leaves</span>
+    <span id="header-percent"></span>
+  </div>
+  <div class="panel-line panel-counts">
+    <span class="state-done">✔ <span id="count-done">0</span></span>
+    <span class="state-doing">▶ <span id="count-doing">0</span></span>
+    <span class="state-ready">● <span id="count-ready">0</span></span>
+    <span class="state-blocked">⊘ <span id="count-blocked">0</span></span>
+    <span class="age" id="age">updated —</span>
+  </div>
+</div>
+
+<div class="banner" id="banner" hidden></div>
+<div id="tree"></div>
+
+<script>
+"use strict";
+
+// ── 6. Vocabulary ────────────────────────────────────────────────────────────
+
+const POLL_INTERVAL_MS = 1000;
+const AGE_INTERVAL_MS = 1000;
+const HEADER_BAR_CELLS = 20;
+const ROW_BAR_CELLS = 5;
+const STALE_AFTER_SECONDS = 10;
+/**
+ * A prefix, not a key: the project name is appended, because `--port` defaults to
+ * 4400 for every project and work-package ids are generic. Under one shared key,
+ * folding `wp-m1` in one project folds a different `wp-m1` in the next project
+ * served on the same port, which reads as rows that have gone missing.
+ */
+const COLLAPSE_STORAGE_PREFIX = "wp-board.collapsed.";
+
+/**
+ * One glyph per state. These are `src/tree.ts`'s own, so a row reads the same here
+ * as it does in `wp tree`; `●` for `ready` is the one addition, for the one state
+ * the CLI cannot express. This object is also the list of states the wire may
+ * legally carry — see `knownState`.
+ */
+const STATE_GLYPHS = {
+  container: "▣",
+  done: "✔",
+  doing: "▶",
+  ready: "●",
+  blocked: "⊘",
+  invalid: "?",
+};
+const BLOCKER_ARROW = "←";
+const CHEVRON_OPEN = "▾";
+const CHEVRON_CLOSED = "▸";
+const BAR_FILLED = "▓";
+const BAR_EMPTY = "░";
+
+const projectLabel = document.getElementById("project");
+const headerBar = document.getElementById("header-bar");
+const headerRatio = document.getElementById("header-ratio");
+const headerPercent = document.getElementById("header-percent");
+const countLabels = {
+  done: document.getElementById("count-done"),
+  doing: document.getElementById("count-doing"),
+  ready: document.getElementById("count-ready"),
+  blocked: document.getElementById("count-blocked"),
+};
+const ageLabel = document.getElementById("age");
+const bannerBox = document.getElementById("banner");
+const treeBox = document.getElementById("tree");
+
+/**
+ * The fold, which persists; §8.1 wants it to survive a reload as well as a render.
+ * It starts empty and is filled by `adoptProject`: the project name is half the
+ * storage key, and it only arrives with the first payload.
+ */
+let collapsed = new Set();
+/** The key `collapsed` lives under, or `null` until the first payload names it. */
+let collapseKey = null;
+/**
+ * The open detail strips, which do not persist. A fold is a lasting statement
+ * about a milestone you are not watching; a strip is something you are reading
+ * right now. Both survive a re-render, which is what §8.1 asks for.
+ */
+const openDetails = new Set();
+
+/** The last `ok: true` payload, so a gesture can re-render without waiting a poll. */
+let lastPayload = null;
+/** The hash of what is on screen. The whole point of §8.3's re-render skip. */
+let renderedHash = null;
+/** When the tree on screen was last confirmed current, for the age indicator. */
+let lastSuccessAt = null;
+/** State per id at the last render, which is what the flash diffs against. */
+let previousStates = new Map();
+let pollTimer = null;
+/** True while one `/api/state` round trip is outstanding. See `poll`. */
+let polling = false;
+
+/** Everything built from the payload goes through here: `textContent`, never
+ * `innerHTML`. Ids and descriptions come out of files an agent wrote. */
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  node.className = className;
+  node.textContent = text === undefined ? "" : text;
+  return node;
+}
+
+/**
+ * An unrecognized state on the wire reads as `invalid` rather than as unstyled
+ * text. The board's job with something broken is to show it, not to hide it.
+ */
+function knownState(state) {
+  return Object.hasOwn(STATE_GLYPHS, state) ? state : "invalid";
+}
+
+/**
+ * `doing` fills neither half of a bar: the bar is `done / total` (§5). The state
+ * counts in the header carry the rest.
+ */
+function barText(done, total, cells) {
+  const filled = total > 0 ? Math.min(cells, Math.round((done / total) * cells)) : 0;
+  return BAR_FILLED.repeat(filled) + BAR_EMPTY.repeat(cells - filled);
+}
+
+/** Padded to four cells so the percentages of nested rows line up under each other. */
+function percentText(done, total) {
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+  return `${percent}%`.padStart(4);
+}
+
+// ── 7. Nesting — from `parent` alone ─────────────────────────────────────────
+
+/**
+ * `parent` is the only thing that says what nests under what. An id is never
+ * parsed: `"wp-m10e1".startsWith("wp-m1")` is `true`, so a prefix match would
+ * sweep a whole other milestone into a milestone's bar. Nor is the row order or
+ * `depth` used for structure — `depth` is on the wire and this file deliberately
+ * never reads it.
+ *
+ * Recursion over the result terminates without a visited set because a parent id
+ * is always shorter than its child's, so the map cannot hold a cycle.
+ */
+function indexRows(rows) {
+  const byId = new Map();
+  for (const row of rows) byId.set(row.id, row);
+
+  const roots = [];
+  const childrenOf = new Map();
+  for (const row of rows) {
+    // `board.ts` has already turned a parent with no row of its own into `null`
+    // (§3). Re-checking is what keeps such a row on screen as a root if that ever
+    // stops being true: a silently vanishing row is the one bug §3 exists to
+    // prevent, and it would look like nothing at all.
+    const parent = row.parent !== null && byId.has(row.parent) ? row.parent : null;
+    if (parent === null) {
+      roots.push(row);
+      continue;
+    }
+    const siblings = childrenOf.get(parent);
+    if (siblings === undefined) childrenOf.set(parent, [row]);
+    else siblings.push(row);
+  }
+  // Input order is `wp tree`'s own pre-order, and grouping preserved it, so every
+  // list here is already in the order to render.
+  return { byId, roots, childrenOf };
+}
+
+// ── 8. Rendering ─────────────────────────────────────────────────────────────
+
+function renderPayload(payload) {
+  renderHeader(payload);
+  renderTree(payload);
+  renderedHash = payload.hash;
+  lastPayload = payload;
+}
+
+function renderHeader(payload) {
+  const summary = payload.summary;
+  const project = payload.project === undefined ? "wps" : payload.project;
+  projectLabel.textContent = project;
+  // The tab is left open on a second screen; the project name is what identifies it.
+  document.title = `wp board — ${project}`;
+  headerBar.textContent = barText(summary.done, summary.total, HEADER_BAR_CELLS);
+  headerRatio.textContent = `${summary.done}/${summary.total} leaves`;
+  headerPercent.textContent = percentText(summary.done, summary.total);
+  // Only four of the five: an `invalid` leaf is in `total` but in none of these
+  // (§5), so they can sum to less than the total. The tree is where it shows up.
+  for (const [state, label] of Object.entries(countLabels)) {
+    label.textContent = String(summary[state]);
+  }
+}
+
+function renderTree(payload) {
+  const index = indexRows(payload.rows);
+  const changed = changedStateIds(payload.rows);
+
+  const fragment = document.createDocumentFragment();
+  for (const root of index.roots) fragment.append(buildNode(root, index, changed));
+  if (payload.rows.length === 0) {
+    fragment.append(element("div", "empty", "the queue is empty"));
+  }
+  treeBox.replaceChildren(fragment);
+
+  previousStates = new Map(payload.rows.map((row) => [row.id, row.state]));
+}
+
+/**
+ * The rows to flash: those whose state differs from the state they were rendered
+ * with. A row with no previous state is new to the page rather than changed —
+ * without that, the first render after a load would flash everything at once.
+ */
+function changedStateIds(rows) {
+  const changed = new Set();
+  for (const row of rows) {
+    const previous = previousStates.get(row.id);
+    if (previous !== undefined && previous !== row.state) changed.add(row.id);
+  }
+  return changed;
+}
+
+function buildNode(row, index, changed) {
+  const state = knownState(row.state);
+  const children = index.childrenOf.get(row.id) ?? [];
+  const isContainer = state === "container";
+
+  const node = element("div", "node");
+  const rowBox = element("div", `row state-${state}`);
+  if (changed.has(row.id)) rowBox.classList.add("flash");
+
+  const chevron = element("span", "chevron");
+  if (isContainer && children.length > 0) {
+    chevron.classList.add("clickable");
+    chevron.textContent = collapsed.has(row.id) ? CHEVRON_CLOSED : CHEVRON_OPEN;
+    chevron.addEventListener("click", (event) => {
+      // The row underneath it is only clickable on a leaf, but stop anyway: the
+      // chevron must never be the thing that opens a detail strip.
+      event.stopPropagation();
+      toggleCollapse(row.id);
+    });
+  }
+  rowBox.append(
+    chevron,
+    element("span", "glyph", STATE_GLYPHS[state]),
+    element("span", "id", row.id),
+    element("span", "description", row.short_description),
+  );
+  if (row.unmet_blockers.length > 0) {
+    rowBox.append(
+      element("span", "blockers", `${BLOCKER_ARROW} ${row.unmet_blockers.join(" ")}`),
+    );
+  }
+  if (isContainer) {
+    const metrics = element("span", "metrics");
+    metrics.append(
+      element("span", "ratio", `${row.leaves_done}/${row.leaves_total}`),
+      element("span", "bar", barText(row.leaves_done, row.leaves_total, ROW_BAR_CELLS)),
+      element("span", "percent", percentText(row.leaves_done, row.leaves_total)),
+    );
+    rowBox.append(metrics);
+  } else {
+    rowBox.classList.add("clickable");
+    rowBox.addEventListener("click", () => toggleDetail(row.id));
+  }
+  node.append(rowBox);
+
+  if (!isContainer && openDetails.has(row.id)) node.append(buildDetail(row, index));
+  if (children.length > 0 && !collapsed.has(row.id)) {
+    const childBox = element("div", "children");
+    for (const child of children) childBox.append(buildNode(child, index, changed));
+    node.append(childBox);
+  }
+  return node;
+}
+
+/**
+ * §8.1's strip: the untruncated description, and each unmet blocker with the state
+ * glyph of its own row, so you can see whether the thing you are waiting on is
+ * itself running or itself blocked.
+ *
+ * Only *unmet* blockers can appear. The wire carries `unmet_blockers`, not the
+ * full `blocked_by`, so a dependency that is already `done` is not here and a row
+ * with nothing left in its way shows only its description. That is a deliberate
+ * cut (§8.1, §10), not an omission — listing satisfied dependencies would mean a
+ * second field on the wire.
+ */
+function buildDetail(row, index) {
+  const detail = element("div", "detail");
+  detail.append(element("div", "detail-description", row.short_description));
+
+  row.unmet_blockers.forEach((blockerId, position) => {
+    const blocker = index.byId.get(blockerId);
+    // A `blocked_by` target is an unvalidated string: it need not name a file at
+    // all, which is a state `wp check` reports and the tree still renders.
+    const state = blocker === undefined ? "invalid" : knownState(blocker.state);
+    const line = element("div", `detail-blocker state-${state}`);
+    line.append(
+      element("span", "detail-label", position === 0 ? "waiting on" : ""),
+      element("span", "glyph", STATE_GLYPHS[state]),
+      element("span", "id", blockerId),
+      element(
+        "span",
+        "description",
+        blocker === undefined ? "(no work package of that id)" : blocker.short_description,
+      ),
+    );
+    detail.append(line);
+  });
+  return detail;
+}
+
+// ── 9. The two gestures ──────────────────────────────────────────────────────
+
+function toggleCollapse(id) {
+  if (collapsed.has(id)) collapsed.delete(id);
+  else collapsed.add(id);
+  saveCollapsed();
+  rerender();
+}
+
+function toggleDetail(id) {
+  if (openDetails.has(id)) openDetails.delete(id);
+  else openDetails.add(id);
+  rerender();
+}
+
+/**
+ * A gesture re-renders from the payload already on screen instead of waiting up to
+ * a second for the next poll. Nothing flashes: `previousStates` was updated by the
+ * render that put these rows here, so folding a milestone is not a state change.
+ */
+function rerender() {
+  if (lastPayload !== null) renderPayload(lastPayload);
+}
+
+/**
+ * Bind the fold to the project being served, before the first render, so a reload
+ * restores the folds of *this* project and not of whatever was last on this port.
+ * The project cannot change under a running server, so this is a first-poll step
+ * that then does nothing.
+ */
+function adoptProject(project) {
+  const key = `${COLLAPSE_STORAGE_PREFIX}${project}`;
+  if (key === collapseKey) return;
+  collapseKey = key;
+  collapsed = loadCollapsed();
+}
+
+function loadCollapsed() {
+  if (collapseKey === null) return new Set();
+  try {
+    const stored = JSON.parse(localStorage.getItem(collapseKey) ?? "[]");
+    return new Set(Array.isArray(stored) ? stored : []);
+  } catch {
+    // A hand-edited or older value must not wedge the board on an empty screen.
+    // Neither must a browser with site data blocked, where the read itself throws.
+    return new Set();
+  }
+}
+
+function saveCollapsed() {
+  if (collapseKey === null) return;
+  try {
+    localStorage.setItem(collapseKey, JSON.stringify([...collapsed]));
+  } catch {
+    // Site data blocked, or the quota is full. The read above already degrades to
+    // "no folds remembered"; without this the *write* throws out of
+    // `toggleCollapse` before `rerender()`, and §8.1's first gesture stops working
+    // altogether rather than merely stopping persisting.
+  }
+}
+
+// ── 10. The polling loop (§8.3) ──────────────────────────────────────────────
+
+async function poll() {
+  // One poll at a time. Each one spawns `wp tree --json`, so on a big queue or a
+  // loaded machine a round trip can outlast the interval — and then two are in
+  // flight, they can resolve out of order, and the older tree renders over the
+  // newer one and flashes rows for a transition that never happened. Skipping a
+  // tick is invisible; rendering backwards is not.
+  if (polling) return;
+  polling = true;
+  try {
+    await pollOnce();
+  } finally {
+    polling = false;
+  }
+}
+
+async function pollOnce() {
+  let payload;
+  try {
+    const response = await fetch("/api/state");
+    payload = await response.json();
+  } catch (error) {
+    // A rejected fetch is §7's case exactly — the server may be restarting — and
+    // it gets §7's treatment: a banner over the tree that is already on screen.
+    showBanner(`board: cannot reach the server — ${error}`);
+    return;
+  }
+
+  if (payload.ok !== true) {
+    showBanner(payload.error ?? "wp: the tree could not be read");
+    return;
+  }
+  hideBanner();
+  // Before the hash check, because on the first poll this is what puts the stored
+  // folds in place for the render that follows.
+  adoptProject(payload.project ?? "");
+  // Set on every successful poll, changed tree or not: this is the age of the data
+  // on screen, and an unchanged tree has just been confirmed current.
+  lastSuccessAt = Date.now();
+  updateAge();
+
+  // The re-render skip. Almost every poll returns the tree that is already
+  // rendered, and rebuilding it would destroy the DOM the user is mid-scroll in —
+  // along with the hover, the text selection and the flash still playing.
+  if (payload.hash === renderedHash) return;
+  renderPayload(payload);
+}
+
+/**
+ * §7: keep the last good tree, put the message above it. It must not blank the
+ * page — a blank page during a run reads as "everything vanished", where a banner
+ * over a stale tree reads as "one file is broken right now", which is the truth
+ * and usually clears itself on the next poll. So this touches nothing but the
+ * banner, and in particular it never stops the age indicator from climbing.
+ */
+function showBanner(message) {
+  bannerBox.textContent = message;
+  bannerBox.hidden = false;
+}
+
+function hideBanner() {
+  bannerBox.hidden = true;
+}
+
+/**
+ * The freshness indicator, ticking on its own interval. The payload carries no
+ * timestamp deliberately (§6) — a `generated_at` would change on every poll and
+ * defeat `hash` entirely — so the client times its own last successful poll, and
+ * this has to keep counting through polls that change nothing and polls that fail.
+ */
+function updateAge() {
+  if (lastSuccessAt === null) {
+    ageLabel.textContent = "updated —";
+    return;
+  }
+  const seconds = Math.round((Date.now() - lastSuccessAt) / 1000);
+  ageLabel.textContent = seconds < 60
+    ? `updated ${seconds}s`
+    : `updated ${Math.floor(seconds / 60)}m`;
+  ageLabel.classList.toggle("stale", seconds >= STALE_AFTER_SECONDS);
+}
+
+function startPolling() {
+  if (pollTimer === null) pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+}
+
+function stopPolling() {
+  if (pollTimer === null) return;
+  clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+// A hidden tab must not spawn a subprocess a second for a day, so the loop stops
+// entirely — and fetches once on the way back, rather than showing a tree up to a
+// second old to someone who has just returned to look at it.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopPolling();
+    return;
+  }
+  void poll();
+  startPolling();
+});
+
+// The age indicator ticks whatever the loop is doing: that is what makes a stale
+// tree visibly stale while the poll is failing, or while the tab was hidden.
+setInterval(updateAge, AGE_INTERVAL_MS);
+
+if (!document.hidden) {
+  void poll();
+  startPolling();
+}
+</script>
+</body>
+</html>
