@@ -7,3 +7,8 @@
 
 # And for shell: a CR in the shebang or in `set -u` makes the script unrunnable.
 *.sh text eol=lf
+
+# telemetry.env is sourced, not run, so a CR does not break it loudly — it makes
+# every value carry a trailing CR instead, so the endpoint becomes
+# `http://127.0.0.1:4318\r` and the traces go nowhere with no error at all.
+telemetry.env text eol=lf

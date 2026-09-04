@@ -141,6 +141,35 @@ export function agentAllowedTools(verifyCommand: string): string[] {
   return [...new Set(["git", ...programs])].map((program) => `Bash(${program}:*)`);
 }
 
+/**
+ * The environment one agent runs in: the caller's own, plus `wp.id` as an OTel
+ * resource attribute. That one tag is the whole of `docs/observability.md` —
+ * every agent in a wave reports itself identically otherwise, so a viewer shows
+ * four anonymous sessions and no way to ask which one burned the tokens.
+ *
+ * Appended, never replaced: `OTEL_RESOURCE_ATTRIBUTES` is general purpose and an
+ * operator may already carry `department=eng` in it. Dropping theirs is invisible
+ * — a filter that used to work simply stops being offered.
+ *
+ * `base` is spread rather than the one variable being returned alone, because
+ * `Bun.spawn` *replaces* the child environment when `env` is passed instead of
+ * merging: an agent handed this variable by itself gets no `PATH`, no `HOME` and
+ * no credentials, and `claude` then fails to start in a way that reads as an auth
+ * problem.
+ *
+ * Nothing is escaped. A `wp.id` comes from the stem grammar (`wp-` plus
+ * `[a-z][0-9]+` segments), which holds no comma, equals sign or whitespace.
+ */
+export function agentEnvironment(
+  id: string,
+  base: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const existing = base.OTEL_RESOURCE_ATTRIBUTES ?? "";
+  // A leading comma is one empty attribute pair, which some collectors reject.
+  const separator = existing === "" ? "" : ",";
+  return { ...base, OTEL_RESOURCE_ATTRIBUTES: `${existing}${separator}wp.id=${id}` };
+}
+
 /** One `wp tree --json` row, as much of it as the stall report reads. */
 interface TreeRow {
   readonly id: string;
@@ -398,14 +427,24 @@ export interface CommandResult {
  * Run one command with no shell in between. §8.2 of the execution model picks a
  * program over shell because quoting a multi-paragraph prompt is what breaks;
  * an argument list has nothing to quote.
+ *
+ * `environment` is forwarded only when it is given, so `wp`, git and the gate
+ * inherit this process's environment exactly as before. When it *is* given,
+ * `Bun.spawn` replaces the child environment rather than merging — see
+ * `agentEnvironment`, which is why the whole base is spread into it.
  */
-async function execute(command: readonly string[], cwd: string): Promise<CommandResult> {
+async function execute(
+  command: readonly string[],
+  cwd: string,
+  environment?: Record<string, string | undefined>,
+): Promise<CommandResult> {
   const child = Bun.spawn({
     cmd: [...command],
     cwd,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    ...(environment === undefined ? {} : { env: environment }),
   });
   const [stdout, stderr] = await Promise.all([
     new Response(child.stdout).text(),
@@ -564,6 +603,9 @@ export function createDriver(config: DriverConfig): Driver {
           ...allowedTools,
         ],
         worktreePath(repositoryRoot, id),
+        // Unconditional: with telemetry off this is a variable nothing reads, so
+        // there is no state to branch on and no flag to keep in sync.
+        agentEnvironment(id, process.env),
       );
       await Bun.write(logPath, `${result.stdout}${result.stderr}`);
       if (result.exitCode !== 0) {
@@ -809,6 +851,10 @@ const HELP = `usage: orchestrate [--dir PATH] [--role PATH] [--scope ID] [--veri
 
 Run the work queue with parallel agents: one worktree per ready work package,
 then merge the branches back one at a time.
+
+Every spawned agent is tagged with its wp.id, so a trace viewer can tell one
+apart from the rest of its wave. To send the traces somewhere, source
+telemetry.env beside this script; docs/observability.md has the detail.
 
 options:
   --dir PATH        work-package directory (default: ./wps)

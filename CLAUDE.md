@@ -20,6 +20,8 @@ This is a standalone repository. Everything it needs is inside it:
 | `docs/vision.md` | Raw brainstorming plus the decision log D1–D11, with the rationale for every constraint below |
 | `docs/execution-model.md` | How an orchestrator runs the queue with parallel agents: the wave loop, worktree isolation, serial merge |
 | `docs/board.md` | The board's approved design: why it polls, the five states, the deep leaf counts, and what is deliberately not built |
+| `telemetry.env` | The exports that switch live traces on, to `.` into a shell. Not a project file and never copied into one; `install.sh` prints the command and writes nothing. Listed in `install.sh`'s required-files loop, so a clone missing it refuses |
+| `docs/observability.md` | Watching a live wave: `wp.id` per agent, the env block that turns telemetry on, the viewer, and what is deliberately not built |
 
 Read `docs/design.md` before changing CLI behaviour, and `docs/vision.md` before
 questioning a constraint — most surprising choices are deliberate and have a recorded
