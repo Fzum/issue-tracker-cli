@@ -43,7 +43,7 @@ Recorded so the omissions read as decisions, not oversights.
 | A `service.name` override | Claude Code owns that name. Overriding a resource attribute a viewer keys its whole navigation on is how a UI ends up blank. `wp.id` is additive and cannot do that. |
 | Any second tag (`wp.wave`, `wp.branch`, `wp.scope`) | The wave number lives in `runQueue`, and the driver's `work(id)` does not receive it. Passing it means changing the `Driver` seam — a real cost for a number a viewer can derive from timestamps. Branch and scope are functions of the ID. |
 | Telemetry for the orchestrator process itself | It is not a `claude` process and has no OTel SDK. Its own report lines on stdout are the record of what it did. |
-| Anything in `install.sh` | Nothing to install. The doc is the deliverable. |
+| Anything in `install.sh` | Nothing to install. The doc is the deliverable. **Amended after approval:** it prints, and still writes nothing — a `telemetry.env` to source and the viewer command, plus one line in `orchestrate --help`. The omission was right about state and wrong about discovery: nobody finds a feature no text mentions. See §5 of `docs/observability.md` for the four things still not built, including the interactive prompt and the `.env`. |
 
 ## 4. The change to `orchestrate.ts`
 

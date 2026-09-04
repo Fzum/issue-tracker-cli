@@ -26,6 +26,7 @@ const CLONE_FILES = [
   "prompts/worker.md",
   "board.ts",
   "board.html",
+  "telemetry.env",
 ] as const;
 
 interface InstallResult {
@@ -382,7 +383,79 @@ describe("the PATH hint", () => {
   });
 });
 
+describe("the telemetry hint", () => {
+  test("given a fresh project when install runs then the viewer, the env file and the doc are named with the clone's own path", () => {
+    // Given
+    const fixture = new ProjectFixture();
+    fixture.givenGitRepository();
+
+    // When
+    const result = fixture.runInstall();
+
+    // Then — the paths are computed from $0, never typed, so they survive a
+    // `git pull` and are right for whichever clone actually ran.
+    expect(result.stdout).toContain("otel-desktop-viewer");
+    expect(result.stdout).toContain(`. ${join(PROJECT_ROOT, "telemetry.env")}`);
+    expect(result.stdout).toContain(join(PROJECT_ROOT, "docs", "observability.md"));
+    // Print-only: nothing about telemetry is written into the target project.
+    expect(fixture.has("telemetry.env")).toBe(false);
+    expect(fixture.has(".env")).toBe(false);
+  });
+
+  test("given telemetry.env is meant to be sourced when git is asked then it is pinned to LF endings", () => {
+    // Given — core.autocrlf=true is set on the dev machine, and .gitattributes
+    // pins only *.ts, *.yml and *.sh.
+    const result = Bun.spawnSync({
+      cmd: ["git", "check-attr", "eol", "--", "telemetry.env"],
+      cwd: PROJECT_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    // When / Then — a CRLF checkout makes every value carry a trailing CR, so
+    // the endpoint becomes `http://127.0.0.1:4318\r` and exports nowhere. The
+    // file still sources without error, which is what makes it invisible.
+    expect(result.stdout.toString().trim()).toBe("telemetry.env: eol: lf");
+  });
+
+  test("given --dry-run when install runs then the telemetry hint is still printed", () => {
+    // Given
+    const fixture = new ProjectFixture();
+    fixture.givenGitRepository();
+
+    // When
+    const result = fixture.runInstall("--dry-run");
+
+    // Then — it is a printed step, not a written one, so --dry-run cannot skip it.
+    expect(result.stdout).toContain(`. ${join(PROJECT_ROOT, "telemetry.env")}`);
+  });
+});
+
 describe("refusals", () => {
+  test("given a clone with no telemetry.env when install runs then it refuses with exit 2 and writes nothing", () => {
+    // Given — a clone that would otherwise install cleanly and then print a
+    // `.` command pointing at a file that is not there.
+    const fixture = new ProjectFixture();
+    fixture.givenGitRepository();
+    const script = fixture.givenCloneWithout("telemetry.env");
+
+    // When
+    const result = fixture.runScript(script, {
+      PATH: process.env["PATH"] ?? "",
+      HOME: fixture.home,
+      WP_BIN_DIR: fixture.binDirectory,
+    });
+
+    // Then — as with board.html, "writes nothing" is the half that bites: the
+    // stand-in wp.ts fails the smoke test at the *end*, so only an untouched
+    // project proves the refusal came first.
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("telemetry.env");
+    expect(fixture.has("wps")).toBe(false);
+    expect(fixture.has(".gitignore")).toBe(false);
+    expect(existsSync(fixture.binDirectory)).toBe(false);
+  });
+
   test("given bun is not on PATH when install runs then it refuses with exit 2 and writes nothing", () => {
     // Given
     const fixture = new ProjectFixture();

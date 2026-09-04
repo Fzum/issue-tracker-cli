@@ -852,6 +852,10 @@ const HELP = `usage: orchestrate [--dir PATH] [--role PATH] [--scope ID] [--veri
 Run the work queue with parallel agents: one worktree per ready work package,
 then merge the branches back one at a time.
 
+Every spawned agent is tagged with its wp.id, so a trace viewer can tell one
+apart from the rest of its wave. To send the traces somewhere, source
+telemetry.env beside this script; docs/observability.md has the detail.
+
 options:
   --dir PATH        work-package directory (default: ./wps)
   --role PATH       worker role prompt (default: ./${ROLE_RELATIVE_PATH})

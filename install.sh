@@ -132,7 +132,9 @@ command -v bun >/dev/null 2>&1 ||
 # board.html is listed beside board.ts because board.ts reads it from disk at
 # request time: a clone carrying only the server installs cleanly and then
 # serves a blank page, which surfaces hours later and nowhere near the cause.
-for required in wp.ts orchestrate.ts prompts/worker.md board.ts board.html; do
+# telemetry.env is listed for the same reason: the Next block below prints a `.`
+# command naming it, and a printed command that cannot run is worse than silence.
+for required in wp.ts orchestrate.ts prompts/worker.md board.ts board.html telemetry.env; do
 	[ -f "$tools/$required" ] ||
 		refuse "$tools/$required not found — run this script from inside the issue-tracker-cli clone."
 done
@@ -241,6 +243,17 @@ printf '      in Claude Code, for the planning skills: /vision /architecture /br
 printf '  wp tree\n'
 printf '  wp-board --open\n'
 printf '  orchestrate --dry-run --verify "<the command that verifies your build>"\n'
+
+# Print-only, like the two above it, and nothing is written into the project: the
+# exports belong to a shell, not to a repository. Every agent is tagged with its
+# wp.id already, so there is no state here to install and nothing to detect —
+# only a human to tell. The paths come from $tools, so they name whichever clone
+# actually ran and stay right after a `git pull`.
+printf '\nOptional — watch a live wave in a trace viewer:\n'
+printf '  go install github.com/CtrlSpice/otel-desktop-viewer@latest && otel-desktop-viewer\n'
+printf '  . %s/telemetry.env\n' "$tools"
+printf '      then open http://localhost:8000 — each agent is tagged with its wp.id.\n'
+printf '      What to look at, and the version floor: %s/docs/observability.md\n' "$tools"
 
 if [ "$attention" != 0 ]; then
 	printf '\nThe ! lines above want a human. Nothing else was left half done.\n'

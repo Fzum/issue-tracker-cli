@@ -754,6 +754,20 @@ describe("the command line", () => {
     expect(result.stdout).toContain("usage: orchestrate");
   });
 
+  test("given --help when run then it names wp.id and where to switch traces on", () => {
+    // Given
+    const fixture = new RepositoryFixture();
+
+    // When
+    const result = fixture.runOrchestrator("--help");
+
+    // Then — install.sh runs once; --help is what a reader reaches for months
+    // later, so it is the only place the feature stays discoverable.
+    expect(result.stdout).toContain("wp.id");
+    expect(result.stdout).toContain("telemetry.env");
+    expect(result.stdout).toContain("docs/observability.md");
+  });
+
   test("given an unknown flag when run then it is a usage error", () => {
     // Given
     const fixture = new RepositoryFixture();
