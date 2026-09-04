@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   agentAllowedTools,
+  agentEnvironment,
   branchName,
   composePrompt,
   createDriver,
@@ -164,14 +165,20 @@ class RepositoryFixture {
   }
 
   /**
-   * A `claude` on PATH that does nothing. `main` refuses to start without one, so
-   * a run that is expected to spawn no agent at all still needs it to exist.
+   * A `claude` on PATH. `main` refuses to start without one, so a run that is
+   * expected to spawn no agent at all still needs it to exist — which is why the
+   * body defaults to doing nothing. Pass one to look at what the agent was given.
    */
-  givenFakeAgent(): void {
+  givenFakeAgent(body = "exit 0"): void {
     mkdirSync(this.binDirectory, { recursive: true });
     const path = join(this.binDirectory, "claude");
-    writeFileSync(path, "#!/bin/sh\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    writeFileSync(path, `#!/bin/sh\n${body}\n`, { encoding: "utf8", mode: 0o755 });
     this.hasFakeAgent = true;
+  }
+
+  /** What the agent printed, as `work` saved it. */
+  logOf(id: string): string {
+    return readFileSync(join(this.root, "log", `${id}.log`), "utf8");
   }
 
   givenWp(id: string, description: string, blockedBy: readonly string[] = []): void {
@@ -581,6 +588,50 @@ describe("prompts and names", () => {
 
     // Then
     expect(message).toBe(`${"x".repeat(200)}…`);
+  });
+});
+
+describe("the agent environment", () => {
+  test("given no telemetry attributes when an agent's environment is built then only the work package is tagged", () => {
+    // Given
+    const base = { PATH: "/usr/bin", HOME: "/home/dev" };
+
+    // When
+    const environment = agentEnvironment("wp-m1e1u1", base);
+
+    // Then no leading comma: an empty attribute pair is rejected by some collectors
+    expect(environment.OTEL_RESOURCE_ATTRIBUTES).toBe("wp.id=wp-m1e1u1");
+    expect(environment.PATH).toBe("/usr/bin");
+    expect(environment.HOME).toBe("/home/dev");
+  });
+
+  test("given attributes the operator already set when an agent's environment is built then the tag is appended", () => {
+    // Given
+    const base = { OTEL_RESOURCE_ATTRIBUTES: "department=eng" };
+
+    // When
+    const environment = agentEnvironment("wp-m1e1u1", base);
+
+    // Then their own tags survive, and the caller's object is untouched
+    expect(environment.OTEL_RESOURCE_ATTRIBUTES).toBe("department=eng,wp.id=wp-m1e1u1");
+    expect(base.OTEL_RESOURCE_ATTRIBUTES).toBe("department=eng");
+  });
+
+  test("given a spawned agent when it reads its environment then it carries its own work-package id", () => {
+    // Given a fake agent that reports the attributes it was handed
+    const fixture = new RepositoryFixture();
+    fixture.givenWp("wp-m1e1", "Parse frontmatter");
+    fixture.givenCommittedRepository();
+    fixture.givenFakeAgent('printf "%s\\n" "$OTEL_RESOURCE_ATTRIBUTES"');
+
+    // When
+    fixture.runOrchestrator();
+
+    // Then the tag reached the child process. The run itself fails and the exit
+    // code is deliberately not asserted: a fake agent commits nothing, so its
+    // branch is an ancestor of HEAD and `merge` refuses it — which happens after
+    // `work` has already written this log.
+    expect(fixture.logOf("wp-m1e1")).toContain("wp.id=wp-m1e1");
   });
 });
 

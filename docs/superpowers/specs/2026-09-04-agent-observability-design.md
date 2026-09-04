@@ -1,6 +1,6 @@
 # Agent observability — design
 
-Approved 2026-09-04. Status: design agreed, not yet implemented.
+Approved 2026-09-04. Status: implemented. See `docs/observability.md`.
 
 ## 1. The problem
 
